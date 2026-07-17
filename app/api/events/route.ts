@@ -14,6 +14,12 @@ const BUILT_IN_ALLOWED_ORIGINS = [
   "https://gaiety-6507.myshopify.com",
   "https://analise-de-dados-fbads.vercel.app",
 ];
+const SHOPIFY_HOST_SUFFIXES = [
+  ".shopify.com",
+  ".myshopify.com",
+  ".shopifycloud.com",
+  ".shopifycdn.com",
+];
 
 interface TrackingEventBody {
   event_id?: unknown;
@@ -46,14 +52,33 @@ function configuredOrigins(): string[] {
   return Array.from(new Set([...BUILT_IN_ALLOWED_ORIGINS, ...environmentOrigins]));
 }
 
+function isTrustedShopifyOrigin(origin: string): boolean {
+  try {
+    const url = new URL(origin);
+    const hostname = url.hostname.toLowerCase();
+
+    if (url.protocol !== "https:") {
+      return false;
+    }
+
+    return (
+      hostname === "shopify.com" ||
+      hostname.includes("shopify-pixel-sandbox") ||
+      SHOPIFY_HOST_SUFFIXES.some((suffix) => hostname.endsWith(suffix))
+    );
+  } catch {
+    return false;
+  }
+}
+
 function isAllowedOrigin(origin: string | null): boolean {
   const allowed = configuredOrigins();
 
-  if (!origin || allowed.includes("*")) {
+  if (!origin || origin === "null" || allowed.includes("*")) {
     return true;
   }
 
-  return allowed.includes(origin);
+  return allowed.includes(origin) || isTrustedShopifyOrigin(origin);
 }
 
 function corsHeaders(origin: string | null): Record<string, string> {

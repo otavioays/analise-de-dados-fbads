@@ -173,7 +173,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   try {
     const sql = getSql();
-    const inserted = await sql`
+    const inserted = (await sql`
       insert into public.analytics_events (
         event_id,
         event_name,
@@ -217,7 +217,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       )
       on conflict (event_id) do nothing
       returning event_id
-    `;
+    `) as Array<{ event_id: string }>;
 
     if (inserted.length === 0) {
       return jsonResponse(request, { ok: true, duplicate: true }, 202);

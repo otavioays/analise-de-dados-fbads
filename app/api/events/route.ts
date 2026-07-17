@@ -9,6 +9,11 @@ const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_BODY_BYTES = 32_000;
 const MAX_PROPERTIES_BYTES = 16_000;
+const BUILT_IN_ALLOWED_ORIGINS = [
+  "https://otavioays.github.io",
+  "https://gaiety-6507.myshopify.com",
+  "https://analise-de-dados-fbads.vercel.app",
+];
 
 interface TrackingEventBody {
   event_id?: unknown;
@@ -33,16 +38,18 @@ interface TrackingEventBody {
 }
 
 function configuredOrigins(): string[] {
-  return (process.env.TRACKING_ALLOWED_ORIGINS ?? "")
+  const environmentOrigins = (process.env.TRACKING_ALLOWED_ORIGINS ?? "")
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean);
+
+  return Array.from(new Set([...BUILT_IN_ALLOWED_ORIGINS, ...environmentOrigins]));
 }
 
 function isAllowedOrigin(origin: string | null): boolean {
   const allowed = configuredOrigins();
 
-  if (!origin || allowed.length === 0 || allowed.includes("*")) {
+  if (!origin || allowed.includes("*")) {
     return true;
   }
 

@@ -1,6 +1,6 @@
 # Conversion Tracker privado
 
-Primeira iteração de um rastreador próprio para diagnosticar o funil da loja. O projeto recebe eventos do navegador, preserva a origem da campanha e grava tudo em uma tabela privada do Supabase.
+Primeira iteração de um rastreador próprio para diagnosticar o funil da loja. O projeto recebe eventos do navegador, preserva a origem da campanha e grava tudo em uma tabela privada no Neon Postgres.
 
 ## O que já está pronto
 
@@ -8,24 +8,24 @@ Primeira iteração de um rastreador próprio para diagnosticar o funil da loja.
 - `POST /api/events`: endpoint com validação, CORS e deduplicação.
 - IDs anônimos de visitante e sessão.
 - Captura de URL, referrer, dispositivo, UTMs e `fbclid`.
-- Eventos automáticos de `page_view`.
+- Evento automático de `page_view`.
 - Eventos por atributos `data-track` ou chamada JavaScript.
 - Migration SQL para a tabela `analytics_events`.
-- Página local para testar o funil inteiro.
+- Página para testar o funil inteiro.
 
-## 1. Criar a tabela no Supabase
+## 1. Criar a tabela no Neon
 
-Abra o **SQL Editor** do seu projeto Supabase e execute o arquivo:
+Abra o **SQL Editor** do seu projeto Neon e execute todo o arquivo:
 
 ```text
-supabase/migrations/001_create_analytics_events.sql
+neon/migrations/001_create_analytics_events.sql
 ```
 
-A tabela usa RLS sem políticas públicas. Somente a API, usando a service role no servidor, grava os eventos.
+A aplicação acessa o banco somente pelo endpoint do servidor. A `DATABASE_URL` não é exposta ao navegador.
 
 ## 2. Configurar as variáveis
 
-Copie o exemplo:
+Para desenvolvimento local:
 
 ```bash
 cp .env.example .env.local
@@ -34,12 +34,11 @@ cp .env.example .env.local
 Preencha:
 
 ```env
-NEXT_PUBLIC_SUPABASE_URL=https://SEU_PROJETO.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=SUA_SERVICE_ROLE_KEY
+DATABASE_URL=postgresql://USUARIO:SENHA@HOST/BANCO?sslmode=require
 TRACKING_ALLOWED_ORIGINS=http://localhost:3000,https://seu-dominio.com.br
 ```
 
-Nunca coloque `SUPABASE_SERVICE_ROLE_KEY` no script da loja ou em uma variável `NEXT_PUBLIC_*`.
+Na Vercel, a integração do Neon normalmente cria `DATABASE_URL` automaticamente. Nunca coloque essa conexão em uma variável `NEXT_PUBLIC_*`.
 
 ## 3. Rodar localmente
 
@@ -48,19 +47,25 @@ npm install
 npm run dev
 ```
 
-Abra `http://localhost:3000`. O `page_view` será disparado automaticamente. Clique nos quatro botões da bancada de testes e confirme os registros em **Supabase → Table Editor → analytics_events**.
+Abra `http://localhost:3000`. O `page_view` será disparado automaticamente. Clique nos quatro botões da bancada de testes e consulte:
+
+```sql
+select *
+from public.analytics_events
+order by received_at desc;
+```
 
 Com `data-debug="true"`, o tracker mostra no console do navegador cada evento enviado ou recusado.
 
 ## 4. Publicar na Vercel
 
-Importe este repositório na Vercel e cadastre as mesmas variáveis de ambiente. Depois do deploy, o tracker ficará disponível em:
+Importe este repositório na Vercel e conecte o Neon ao projeto. Depois do deploy, o tracker ficará disponível em:
 
 ```text
 https://SEU-APP.vercel.app/tracker.js
 ```
 
-Atualize `TRACKING_ALLOWED_ORIGINS` com o domínio exato da loja e faça um novo deploy.
+Cadastre também `TRACKING_ALLOWED_ORIGINS` com o domínio exato da loja e faça um novo deploy.
 
 ## 5. Instalar no site da loja
 
@@ -150,4 +155,4 @@ Na aba **Network**, procure uma requisição `POST /api/events` com resposta `20
 
 ## Dados que não são coletados
 
-O tracker não captura conteúdo de formulários, nome, e-mail, telefone, endereço ou dados de pagamento. Ele registra apenas eventos de navegação e propriedades que forem enviadas explicitamente.
+O tracker não captura conteúdo de formulários, nome, e-mail, telefone, endereço ou dados de pagamento. Ele registra apenas eventos de navegação e propriedades enviadas explicitamente.

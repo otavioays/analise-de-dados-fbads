@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   validate:
@@ -23,66 +22,11 @@ jobs:
         with:
           node-version: 22
 
-      - name: Run diagnostics
-        id: diagnostics
-        shell: bash
-        run: |
-          set +e
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
 
-          npm install --no-audit --no-fund > install.log 2>&1
-          install_status=$?
+      - name: Typecheck
+        run: npm run typecheck
 
-          if [ "$install_status" -eq 0 ]; then
-            npm run typecheck > typecheck.log 2>&1
-            typecheck_status=$?
-          else
-            typecheck_status=99
-            echo "Typecheck skipped because dependency installation failed." > typecheck.log
-          fi
-
-          if [ "$install_status" -eq 0 ]; then
-            npm run build > build.log 2>&1
-            build_status=$?
-          else
-            build_status=99
-            echo "Build skipped because dependency installation failed." > build.log
-          fi
-
-          {
-            echo "## Neon CI diagnostics for $GITHUB_SHA"
-            echo
-            echo "- npm install: $install_status"
-            echo "- typecheck: $typecheck_status"
-            echo "- build: $build_status"
-            echo
-            echo "### npm install"
-            echo '```text'
-            tail -n 120 install.log
-            echo '```'
-            echo
-            echo "### typecheck"
-            echo '```text'
-            tail -n 160 typecheck.log
-            echo '```'
-            echo
-            echo "### build"
-            echo '```text'
-            tail -n 200 build.log
-            echo '```'
-          } > diagnostics.md
-
-          if [ "$install_status" -ne 0 ] || [ "$typecheck_status" -ne 0 ] || [ "$build_status" -ne 0 ]; then
-            echo "failed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "failed=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Publish diagnostic output
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh issue comment 2 --body-file diagnostics.md
-
-      - name: Mark validation as failed
-        if: steps.diagnostics.outputs.failed == 'true'
-        run: exit 1
+      - name: Production build
+        run: npm run build

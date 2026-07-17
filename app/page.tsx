@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 const testEvents = [
   {
     name: "buy_button_click",
@@ -32,12 +34,11 @@ export default function Home() {
   return (
     <main className="shell">
       <section className="hero">
-        <p className="eyebrow">ITERAÇÃO 1</p>
+        <p className="eyebrow">ITERAÇÃO 1 VALIDADA</p>
         <h1>Conversion Tracker</h1>
         <p className="subtitle">
-          Esta página serve como bancada de testes. O <code>page_view</code> é
-          disparado automaticamente; os botões abaixo simulam as etapas do
-          funil.
+          Esta página continua como bancada de testes. O <code>page_view</code> é
+          disparado automaticamente e os botões simulam as etapas do funil.
         </p>
 
         <div className={isConfigured ? "status ready" : "status pending"}>
@@ -48,10 +49,16 @@ export default function Home() {
             </strong>
             <p>
               {isConfigured
-                ? "A conexão existe. Execute a migration antes de testar os eventos."
+                ? "A captura está pronta. Use o dashboard para analisar o funil."
                 : "Conecte o banco e disponibilize DATABASE_URL na Vercel."}
             </p>
           </div>
+        </div>
+
+        <div style={{ marginTop: 20 }}>
+          <Link className="primaryLink" href="/dashboard">
+            Abrir dashboard do funil
+          </Link>
         </div>
       </section>
 
@@ -81,13 +88,12 @@ export default function Home() {
       </section>
 
       <section className="panel compact">
-        <p className="eyebrow">CHECKLIST</p>
+        <p className="eyebrow">STATUS</p>
         <ol className="checklist">
-          <li>Conectar o Neon ao projeto da Vercel.</li>
-          <li>Executar a migration SQL no Neon SQL Editor.</li>
-          <li>Esperar o novo deploy da branch <code>main</code>.</li>
-          <li>Clicar nos quatro botões desta página.</li>
-          <li>Consultar os registros na tabela <code>analytics_events</code>.</li>
+          <li>Neon conectado à Vercel.</li>
+          <li>Tabela <code>analytics_events</code> criada.</li>
+          <li>Eventos do funil gravados corretamente.</li>
+          <li>Dashboard agregado disponível em <code>/dashboard</code>.</li>
         </ol>
       </section>
     </main>

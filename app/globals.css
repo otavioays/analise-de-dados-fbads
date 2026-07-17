@@ -35,6 +35,10 @@ button {
   color: inherit;
 }
 
+a {
+  color: inherit;
+}
+
 code {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
@@ -201,17 +205,272 @@ h2 {
   line-height: 1.55;
 }
 
+.primaryLink,
+.secondaryLink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 46px;
+  padding: 0 18px;
+  border-radius: 14px;
+  font-weight: 750;
+  text-decoration: none;
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease;
+}
+
+.primaryLink {
+  border: 1px solid #72f2b3;
+  background: #72f2b3;
+  color: #07120d;
+}
+
+.secondaryLink {
+  border: 1px solid #2c3440;
+  background: #11151c;
+  color: #dce2ed;
+}
+
+.primaryLink:hover,
+.secondaryLink:hover {
+  transform: translateY(-1px);
+}
+
+.dashboardShell {
+  width: min(1180px, calc(100% - 32px));
+}
+
+.dashboardHeader {
+  display: flex;
+  gap: 32px;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: 28px;
+}
+
+.dashboardTitle {
+  margin-bottom: 16px;
+  font-size: clamp(2.7rem, 7vw, 5.4rem);
+}
+
+.dashboardSubtitle {
+  margin-bottom: 0;
+}
+
+.filterBar {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr auto;
+  gap: 12px;
+  align-items: end;
+  padding: 18px;
+  border: 1px solid #222832;
+  border-radius: 20px;
+  background: rgba(14, 17, 23, 0.92);
+}
+
+.filterBar label {
+  display: grid;
+  gap: 8px;
+}
+
+.filterBar label span {
+  color: #8f98aa;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.filterBar select {
+  width: 100%;
+  min-height: 46px;
+  padding: 0 12px;
+  border: 1px solid #2a313d;
+  border-radius: 13px;
+  background: #0e1218;
+  color: #f7f8fb;
+}
+
+.filterButton {
+  min-height: 46px;
+  padding: 0 18px;
+  border: 1px solid #72f2b3;
+  border-radius: 13px;
+  background: #72f2b3;
+  color: #07120d;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.metricGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.metricCard {
+  min-height: 148px;
+  padding: 20px;
+  border: 1px solid #222832;
+  border-radius: 20px;
+  background: rgba(14, 17, 23, 0.92);
+}
+
+.metricCard span,
+.metricCard small {
+  display: block;
+  color: #8d96a6;
+}
+
+.metricCard span {
+  margin-bottom: 14px;
+  font-size: 0.84rem;
+  font-weight: 750;
+}
+
+.metricCard strong {
+  display: block;
+  margin-bottom: 10px;
+  font-size: clamp(2rem, 4vw, 3.1rem);
+  letter-spacing: -0.055em;
+}
+
+.metricCard small {
+  font-size: 0.82rem;
+}
+
+.dashboardPanelHeader {
+  align-items: flex-start;
+}
+
+.funnelList {
+  display: grid;
+  gap: 18px;
+}
+
+.funnelRow {
+  display: grid;
+  gap: 10px;
+}
+
+.funnelCopy {
+  display: flex;
+  gap: 18px;
+  align-items: flex-end;
+  justify-content: space-between;
+}
+
+.funnelCopy > div:first-child {
+  display: grid;
+  gap: 5px;
+}
+
+.funnelCopy code {
+  color: #72f2b3;
+  font-size: 0.76rem;
+}
+
+.funnelNumbers {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  text-align: right;
+}
+
+.funnelNumbers strong {
+  font-size: 1.25rem;
+}
+
+.funnelNumbers span {
+  min-width: 64px;
+  color: #9ca5b5;
+  font-size: 0.86rem;
+}
+
+.funnelTrack {
+  height: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #171c24;
+}
+
+.funnelFill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #3ccf91, #72f2b3);
+}
+
+.emptyState {
+  padding: 28px;
+  border: 1px dashed #303947;
+  border-radius: 16px;
+  color: #8e98aa;
+  text-align: center;
+}
+
+.tableScroller {
+  overflow-x: auto;
+}
+
+.dataTable {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.dataTable th,
+.dataTable td {
+  padding: 14px 12px;
+  border-bottom: 1px solid #242b35;
+  white-space: nowrap;
+}
+
+.dataTable th {
+  color: #858fa1;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.dataTable td {
+  color: #d8dde7;
+  font-size: 0.91rem;
+}
+
+.dataTable tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+@media (max-width: 900px) {
+  .filterBar,
+  .metricGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .filterButton {
+    width: 100%;
+  }
+}
+
 @media (max-width: 700px) {
   .shell {
     padding-top: 44px;
   }
 
-  .panelHeader {
+  .panelHeader,
+  .dashboardHeader {
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .eventGrid {
+  .eventGrid,
+  .filterBar,
+  .metricGrid {
     grid-template-columns: 1fr;
+  }
+
+  .funnelCopy {
+    align-items: flex-start;
   }
 }

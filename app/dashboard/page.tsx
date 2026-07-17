@@ -69,38 +69,72 @@ export default async function DashboardPage({
 
   const [metricsResult, filtersResult, breakdownResult] = await Promise.all([
     sql`
+      with base_events as (
+        select *
+        from public.analytics_events
+        where received_at >= now() - (${days} * interval '1 day')
+          and coalesce(properties ->> 'test', 'false') <> 'true'
+      ),
+      cohort as (
+        select distinct session_id
+        from base_events
+        where event_name = 'page_view'
+          and (${campaign} = '' or coalesce(utm_campaign, '') = ${campaign})
+          and (${content} = '' or coalesce(utm_content, '') = ${content})
+      )
       select
-        count(distinct visitor_id) as visitors,
-        count(distinct session_id) as sessions,
-        count(*) filter (where event_name = 'page_view') as page_views,
-        count(distinct session_id) filter (where event_name = 'buy_button_click') as buy_clicks,
-        count(distinct session_id) filter (where event_name = 'add_to_cart') as carts,
-        count(distinct session_id) filter (where event_name = 'checkout_started') as checkouts,
-        count(distinct session_id) filter (where event_name = 'purchase') as purchases
-      from public.analytics_events
-      where received_at >= now() - (${days} * interval '1 day')
-        and (${campaign} = '' or coalesce(utm_campaign, '') = ${campaign})
-        and (${content} = '' or coalesce(utm_content, '') = ${content})
+        count(distinct e.visitor_id) filter (where e.event_name = 'page_view') as visitors,
+        count(distinct cohort.session_id) as sessions,
+        count(*) filter (where e.event_name = 'page_view') as page_views,
+        count(distinct e.session_id) filter (where e.event_name = 'buy_button_click') as buy_clicks,
+        count(distinct e.session_id) filter (where e.event_name = 'add_to_cart') as carts,
+        count(distinct e.session_id) filter (where e.event_name = 'checkout_started') as checkouts,
+        count(distinct e.session_id) filter (where e.event_name = 'purchase') as purchases
+      from cohort
+      left join base_events e on e.session_id = cohort.session_id
     `,
     sql`
       select distinct utm_campaign, utm_content
       from public.analytics_events
       where received_at >= now() - interval '90 days'
+        and event_name = 'page_view'
+        and coalesce(properties ->> 'test', 'false') <> 'true'
         and (utm_campaign is not null or utm_content is not null)
       order by utm_campaign nulls last, utm_content nulls last
       limit 250
     `,
     sql`
+      with base_events as (
+        select *
+        from public.analytics_events
+        where received_at >= now() - (${days} * interval '1 day')
+          and coalesce(properties ->> 'test', 'false') <> 'true'
+      ),
+      attributed_sessions as (
+        select distinct on (session_id)
+          session_id,
+          coalesce(nullif(utm_campaign, ''), 'Sem campanha') as campaign,
+          coalesce(nullif(utm_content, ''), 'Sem criativo') as content
+        from base_events
+        where event_name = 'page_view'
+          and (${campaign} = '' or coalesce(utm_campaign, '') = ${campaign})
+          and (${content} = '' or coalesce(utm_content, '') = ${content})
+        order by session_id, client_timestamp asc
+      ),
+      purchased_sessions as (
+        select distinct session_id
+        from base_events
+        where event_name = 'purchase'
+      )
       select
-        coalesce(nullif(utm_campaign, ''), 'Sem campanha') as campaign,
-        coalesce(nullif(utm_content, ''), 'Sem criativo') as content,
-        count(distinct session_id) as sessions,
-        count(distinct session_id) filter (where event_name = 'purchase') as purchases
-      from public.analytics_events
-      where received_at >= now() - (${days} * interval '1 day')
-        and (${campaign} = '' or coalesce(utm_campaign, '') = ${campaign})
-        and (${content} = '' or coalesce(utm_content, '') = ${content})
-      group by 1, 2
+        attributed_sessions.campaign,
+        attributed_sessions.content,
+        count(*) as sessions,
+        count(purchased_sessions.session_id) as purchases
+      from attributed_sessions
+      left join purchased_sessions
+        on purchased_sessions.session_id = attributed_sessions.session_id
+      group by attributed_sessions.campaign, attributed_sessions.content
       order by sessions desc, purchases desc
       limit 12
     `,
@@ -242,9 +276,9 @@ export default async function DashboardPage({
         <div className="panelHeader dashboardPanelHeader">
           <div>
             <p className="eyebrow">CONVERSÃO</p>
-            <h2>Funil por sessões únicas</h2>
+            <h2>Funil por coorte de sessões</h2>
           </div>
-          <span className="hint">Taxa calculada contra a etapa anterior</span>
+          <span className="hint">Somente jornadas iniciadas na página, sem eventos de teste</span>
         </div>
 
         {sessions === 0 ? (
@@ -286,7 +320,7 @@ export default async function DashboardPage({
             <p className="eyebrow">AQUISIÇÃO</p>
             <h2>Campanhas e criativos</h2>
           </div>
-          <span className="hint">Sessões e compras atribuídas por UTM</span>
+          <span className="hint">Atribuição herdada da primeira page view da sessão</span>
         </div>
 
         <div className="tableScroller">

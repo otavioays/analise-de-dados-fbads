@@ -15,7 +15,6 @@ type MetricRow = {
   visitors?: string | number;
   sessions?: string | number;
   page_views?: string | number;
-  product_views?: string | number;
   buy_clicks?: string | number;
   carts?: string | number;
   checkouts?: string | number;
@@ -74,7 +73,6 @@ export default async function DashboardPage({
         count(distinct visitor_id) as visitors,
         count(distinct session_id) as sessions,
         count(*) filter (where event_name = 'page_view') as page_views,
-        count(distinct session_id) filter (where event_name = 'product_view') as product_views,
         count(distinct session_id) filter (where event_name = 'buy_button_click') as buy_clicks,
         count(distinct session_id) filter (where event_name = 'add_to_cart') as carts,
         count(distinct session_id) filter (where event_name = 'checkout_started') as checkouts,
@@ -122,7 +120,6 @@ export default async function DashboardPage({
   const visitors = asCount(metric.visitors);
   const sessions = asCount(metric.sessions);
   const pageViews = asCount(metric.page_views);
-  const productViews = asCount(metric.product_views);
   const buyClicks = asCount(metric.buy_clicks);
   const carts = asCount(metric.carts);
   const checkouts = asCount(metric.checkouts);
@@ -145,12 +142,7 @@ export default async function DashboardPage({
   );
 
   const funnelStages = [
-    { label: "Sessões", event: "session", value: sessions },
-    {
-      label: "Visualizaram o produto",
-      event: "product_view",
-      value: productViews,
-    },
+    { label: "Visitaram a página", event: "session", value: sessions },
     {
       label: "Clicaram em comprar",
       event: "buy_button_click",

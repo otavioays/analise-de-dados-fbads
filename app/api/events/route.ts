@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { getSupabaseAdmin } from "@/lib/supabase-admin";
+import { getSql } from "@/lib/neon";
 
 export const runtime = "nodejs";
 
@@ -157,7 +157,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   const properties = isPlainObject(body.properties) ? body.properties : {};
-  if (JSON.stringify(properties).length > MAX_PROPERTIES_BYTES) {
+  const serializedProperties = JSON.stringify(properties);
+
+  if (serializedProperties.length > MAX_PROPERTIES_BYTES) {
     return jsonResponse(request, { ok: false, error: "Properties are too large." }, 413);
   }
 
@@ -169,44 +171,65 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       ? body.screen_width
       : null;
 
-  const eventRow = {
-    event_id: body.event_id,
-    event_name: body.event_name,
-    visitor_id: body.visitor_id,
-    session_id: body.session_id,
-    client_timestamp: timestamp.toISOString(),
-    page_url: body.page_url,
-    page_path: optionalString(body.page_path, 1_024),
-    page_title: optionalString(body.page_title, 512),
-    referrer: optionalString(body.referrer, 2_048),
-    utm_source: optionalString(body.utm_source, 255),
-    utm_medium: optionalString(body.utm_medium, 255),
-    utm_campaign: optionalString(body.utm_campaign, 255),
-    utm_content: optionalString(body.utm_content, 255),
-    utm_term: optionalString(body.utm_term, 255),
-    fbclid: optionalString(body.fbclid, 1_024),
-    device_type: optionalString(body.device_type, 32),
-    screen_width: screenWidth,
-    language: optionalString(body.language, 64),
-    properties,
-  };
-
   try {
-    const supabase = getSupabaseAdmin();
-    const { error } = await supabase.from("analytics_events").insert(eventRow);
+    const sql = getSql();
+    const inserted = await sql`
+      insert into public.analytics_events (
+        event_id,
+        event_name,
+        visitor_id,
+        session_id,
+        client_timestamp,
+        page_url,
+        page_path,
+        page_title,
+        referrer,
+        utm_source,
+        utm_medium,
+        utm_campaign,
+        utm_content,
+        utm_term,
+        fbclid,
+        device_type,
+        screen_width,
+        language,
+        properties
+      ) values (
+        ${body.event_id}::uuid,
+        ${body.event_name},
+        ${body.visitor_id}::uuid,
+        ${body.session_id}::uuid,
+        ${timestamp.toISOString()}::timestamptz,
+        ${body.page_url},
+        ${optionalString(body.page_path, 1_024)},
+        ${optionalString(body.page_title, 512)},
+        ${optionalString(body.referrer, 2_048)},
+        ${optionalString(body.utm_source, 255)},
+        ${optionalString(body.utm_medium, 255)},
+        ${optionalString(body.utm_campaign, 255)},
+        ${optionalString(body.utm_content, 255)},
+        ${optionalString(body.utm_term, 255)},
+        ${optionalString(body.fbclid, 1_024)},
+        ${optionalString(body.device_type, 32)},
+        ${screenWidth},
+        ${optionalString(body.language, 64)},
+        ${serializedProperties}::jsonb
+      )
+      on conflict (event_id) do nothing
+      returning event_id
+    `;
 
-    if (error?.code === "23505") {
+    if (inserted.length === 0) {
       return jsonResponse(request, { ok: true, duplicate: true }, 202);
-    }
-
-    if (error) {
-      console.error("Failed to store analytics event", error);
-      return jsonResponse(request, { ok: false, error: "Could not store event." }, 500);
     }
 
     return jsonResponse(request, { ok: true }, 201);
   } catch (error) {
-    console.error("Tracking API configuration error", error);
-    return jsonResponse(request, { ok: false, error: "Tracking API is not configured." }, 500);
+    console.error("Failed to store analytics event", error);
+    return jsonResponse(
+      request,
+      { ok: false, error: "Could not store event. Check DATABASE_URL and the migration." },
+      500,
+    );
   }
 }

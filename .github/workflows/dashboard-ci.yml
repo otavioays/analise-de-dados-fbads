@@ -1,0 +1,69 @@
+name: Dashboard CI
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  validate-dashboard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run validation
+        id: validation
+        shell: bash
+        run: |
+          set +e
+          npm install --no-audit --no-fund > install.log 2>&1
+          install_status=$?
+          npm run typecheck > typecheck.log 2>&1
+          typecheck_status=$?
+          npm run build > build.log 2>&1
+          build_status=$?
+
+          {
+            echo "## Dashboard CI for $GITHUB_SHA"
+            echo
+            echo "- npm install: $install_status"
+            echo "- typecheck: $typecheck_status"
+            echo "- build: $build_status"
+            echo
+            echo "### Typecheck"
+            echo '```text'
+            tail -n 160 typecheck.log
+            echo '```'
+            echo
+            echo "### Build"
+            echo '```text'
+            tail -n 220 build.log
+            echo '```'
+          } > diagnostics.md
+
+          if [ "$install_status" -ne 0 ] || [ "$typecheck_status" -ne 0 ] || [ "$build_status" -ne 0 ]; then
+            echo "failed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "failed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish diagnostics
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh issue comment 3 --body-file diagnostics.md
+
+      - name: Mark failure
+        if: steps.validation.outputs.failed == 'true'
+        run: exit 1

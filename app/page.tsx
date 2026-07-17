@@ -27,9 +27,7 @@ const testEvents = [
 ];
 
 export default function Home() {
-  const hasSupabaseUrl = Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL);
-  const hasServiceRole = Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY);
-  const isConfigured = hasSupabaseUrl && hasServiceRole;
+  const isConfigured = Boolean(process.env.DATABASE_URL);
 
   return (
     <main className="shell">
@@ -46,14 +44,12 @@ export default function Home() {
           <span className="statusDot" />
           <div>
             <strong>
-              {isConfigured
-                ? "Supabase configurado"
-                : "Supabase ainda não configurado"}
+              {isConfigured ? "Neon configurado" : "Neon ainda não configurado"}
             </strong>
             <p>
               {isConfigured
-                ? "Os eventos já podem ser gravados no banco."
-                : "Adicione as variáveis de ambiente antes de testar os eventos."}
+                ? "A conexão existe. Execute a migration antes de testar os eventos."
+                : "Conecte o banco e disponibilize DATABASE_URL na Vercel."}
             </p>
           </div>
         </div>
@@ -87,11 +83,11 @@ export default function Home() {
       <section className="panel compact">
         <p className="eyebrow">CHECKLIST</p>
         <ol className="checklist">
-          <li>Executar a migration SQL no Supabase.</li>
-          <li>Preencher o arquivo <code>.env.local</code>.</li>
-          <li>Rodar <code>npm install</code> e <code>npm run dev</code>.</li>
+          <li>Conectar o Neon ao projeto da Vercel.</li>
+          <li>Executar a migration SQL no Neon SQL Editor.</li>
+          <li>Esperar o novo deploy da branch <code>main</code>.</li>
           <li>Clicar nos quatro botões desta página.</li>
-          <li>Confirmar os registros na tabela <code>analytics_events</code>.</li>
+          <li>Consultar os registros na tabela <code>analytics_events</code>.</li>
         </ol>
       </section>
     </main>

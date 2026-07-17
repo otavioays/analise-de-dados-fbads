@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@supabase/supabase-js": "2.110.5",
+    "@neondatabase/serverless": "1.1.0",
     "next": "16.2.10",
     "react": "19.2.7",
     "react-dom": "19.2.7"

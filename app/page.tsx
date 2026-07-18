@@ -36,6 +36,7 @@ const dashboardLinks = [
   { href: "/sessions", label: "Explorar sessões individuais", primary: false },
   { href: "/compare", label: "Comparar criativos", primary: false },
   { href: "/ai-export", label: "Copiar dados para IA", primary: false },
+  { href: "/session-lab", label: "Testar integridade da sessão", primary: false },
 ];
 
 export default function Home() {
@@ -86,7 +87,7 @@ export default function Home() {
           {dashboardLinks.map((item) => {
             const className = item.primary ? "primaryLink" : "secondaryLink";
 
-            if (isConfigured) {
+            if (isConfigured || item.href === "/session-lab") {
               return (
                 <Link className={className} href={item.href} key={item.href}>
                   {item.label}
@@ -155,6 +156,7 @@ export default function Home() {
           <li>Neon conectado à Vercel.</li>
           <li>Tabela <code>analytics_events</code> criada.</li>
           <li>Eventos do funil gravados corretamente.</li>
+          <li>Sessões persistentes entre abas por 30 minutos.</li>
           <li>Dashboard de conversão disponível em <code>/dashboard</code>.</li>
           <li>Análise comportamental disponível em <code>/behavior</code>.</li>
           <li>Jornadas individuais disponíveis em <code>/sessions</code>.</li>

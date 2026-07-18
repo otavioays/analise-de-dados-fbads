@@ -62,9 +62,9 @@ export default function DatabaseSetupPage() {
           <article className="funnelRow">
             <div className="funnelCopy">
               <div>
-                <strong>2. Crie a variável na Vercel</strong>
+                <strong>2. Crie ou conecte a variável na Vercel</strong>
                 <code>Vercel → Project → Settings → Environment Variables</code>
-                <small>Nome recomendado: DATABASE_URL. Cole a connection string como valor.</small>
+                <small>Nome recomendado: DATABASE_URL. A integração do Neon também pode criar essa variável automaticamente.</small>
               </div>
             </div>
           </article>
@@ -82,9 +82,9 @@ export default function DatabaseSetupPage() {
           <article className="funnelRow">
             <div className="funnelCopy">
               <div>
-                <strong>4. Salve e faça um novo deploy</strong>
-                <code>Deployments → Redeploy</code>
-                <small>Variáveis novas só entram em deployments criados depois da alteração.</small>
+                <strong>4. Gere um deployment novo</strong>
+                <code>Redeploy ou novo commit na branch</code>
+                <small>Conectar o Neon não dispara necessariamente um deploy. Variáveis novas só entram em deployments criados depois da conexão.</small>
               </div>
             </div>
           </article>

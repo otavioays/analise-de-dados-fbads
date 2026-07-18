@@ -1,10 +1,7 @@
 (function () {
   "use strict";
 
-  if (window.__fbAdsConversionTrackerLoaded) {
-    return;
-  }
-
+  if (window.__fbAdsConversionTrackerLoaded) return;
   window.__fbAdsConversionTrackerLoaded = true;
 
   var script = document.currentScript;
@@ -14,23 +11,18 @@
   }
 
   var scriptUrl = new URL(script.src, window.location.href);
-  var endpoint =
-    script.getAttribute("data-endpoint") || scriptUrl.origin + "/api/events";
+  var endpoint = script.getAttribute("data-endpoint") || scriptUrl.origin + "/api/events";
   var debug = script.getAttribute("data-debug") === "true";
   var autoPageViews = script.getAttribute("data-auto-page-view") !== "false";
-  var storagePrefix =
-    script.getAttribute("data-storage-prefix") || "fbads_conversion_tracker";
-
+  var autoBehavior = script.getAttribute("data-auto-behavior") !== "false";
+  var storagePrefix = script.getAttribute("data-storage-prefix") || "fbads_conversion_tracker";
   var visitorStorageKey = storagePrefix + "_visitor_id";
   var sessionStorageKey = storagePrefix + "_session_id";
   var firstTouchStorageKey = storagePrefix + "_first_touch";
   var sessionAttributionKey = storagePrefix + "_session_attribution";
 
   function log() {
-    if (!debug || !window.console) {
-      return;
-    }
-
+    if (!debug || !window.console) return;
     var args = Array.prototype.slice.call(arguments);
     args.unshift("[ConversionTracker]");
     window.console.log.apply(window.console, args);
@@ -40,7 +32,6 @@
     if (window.crypto && typeof window.crypto.randomUUID === "function") {
       return window.crypto.randomUUID();
     }
-
     return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
       var random = Math.floor(Math.random() * 16);
       var value = c === "x" ? random : (random & 3) | 8;
@@ -49,120 +40,72 @@
   }
 
   function readStorage(storage, key) {
-    try {
-      return storage.getItem(key);
-    } catch (_error) {
-      return null;
-    }
+    try { return storage.getItem(key); } catch (_error) { return null; }
   }
 
   function writeStorage(storage, key, value) {
-    try {
-      storage.setItem(key, value);
-      return true;
-    } catch (_error) {
-      return false;
-    }
+    try { storage.setItem(key, value); return true; } catch (_error) { return false; }
   }
 
   function getOrCreateId(storage, key) {
     var existing = readStorage(storage, key);
-    if (existing) {
-      return existing;
-    }
-
+    if (existing) return existing;
     var created = uuid();
     writeStorage(storage, key, created);
     return created;
   }
 
   function parseJson(value) {
-    if (!value) {
-      return null;
-    }
-
-    try {
-      return JSON.parse(value);
-    } catch (_error) {
-      return null;
-    }
+    if (!value) return null;
+    try { return JSON.parse(value); } catch (_error) { return null; }
   }
 
   function compactObject(object) {
     var output = {};
-
     Object.keys(object).forEach(function (key) {
       var value = object[key];
-      if (value !== null && value !== undefined && value !== "") {
-        output[key] = value;
-      }
+      if (value !== null && value !== undefined && value !== "") output[key] = value;
     });
-
     return output;
   }
 
   function readUrlAttribution() {
     var params = new URLSearchParams(window.location.search);
-
     return compactObject({
       utm_source: params.get("utm_source"),
       utm_medium: params.get("utm_medium"),
       utm_campaign: params.get("utm_campaign"),
       utm_content: params.get("utm_content"),
       utm_term: params.get("utm_term"),
-      fbclid: params.get("fbclid"),
+      fbclid: params.get("fbclid")
     });
-  }
-
-  function hasAttribution(attribution) {
-    return Object.keys(attribution).length > 0;
   }
 
   function resolveAttribution() {
     var current = readUrlAttribution();
     var firstTouch = parseJson(readStorage(window.localStorage, firstTouchStorageKey));
-    var sessionTouch = parseJson(
-      readStorage(window.sessionStorage, sessionAttributionKey),
-    );
+    var sessionTouch = parseJson(readStorage(window.sessionStorage, sessionAttributionKey));
 
-    if (hasAttribution(current)) {
+    if (Object.keys(current).length) {
       sessionTouch = current;
-      writeStorage(
-        window.sessionStorage,
-        sessionAttributionKey,
-        JSON.stringify(sessionTouch),
-      );
+      writeStorage(window.sessionStorage, sessionAttributionKey, JSON.stringify(sessionTouch));
     }
 
-    if (!firstTouch && hasAttribution(current)) {
+    if (!firstTouch && Object.keys(current).length) {
       firstTouch = Object.assign({}, current, {
         landing_page: window.location.href,
-        captured_at: new Date().toISOString(),
+        captured_at: new Date().toISOString()
       });
-      writeStorage(
-        window.localStorage,
-        firstTouchStorageKey,
-        JSON.stringify(firstTouch),
-      );
+      writeStorage(window.localStorage, firstTouchStorageKey, JSON.stringify(firstTouch));
     }
 
-    return {
-      active: sessionTouch || current || firstTouch || {},
-      firstTouch: firstTouch || {},
-    };
+    return { active: sessionTouch || current || firstTouch || {}, firstTouch: firstTouch || {} };
   }
 
   function getDeviceType() {
     var width = window.screen && window.screen.width ? window.screen.width : 0;
-
-    if (width > 0 && width < 768) {
-      return "mobile";
-    }
-
-    if (width >= 768 && width < 1_024) {
-      return "tablet";
-    }
-
+    if (width > 0 && width < 768) return "mobile";
+    if (width >= 768 && width < 1024) return "tablet";
     return "desktop";
   }
 
@@ -173,10 +116,7 @@
   function buildPayload(eventName, properties) {
     var attribution = resolveAttribution();
     var active = attribution.active;
-    var safeProperties =
-      properties && typeof properties === "object" && !Array.isArray(properties)
-        ? properties
-        : {};
+    var safeProperties = properties && typeof properties === "object" && !Array.isArray(properties) ? properties : {};
 
     return {
       event_id: uuid(),
@@ -197,124 +137,205 @@
       device_type: getDeviceType(),
       screen_width: window.screen && window.screen.width ? window.screen.width : null,
       language: navigator.language || null,
-      properties: Object.assign({}, safeProperties, {
-        first_touch: attribution.firstTouch,
-      }),
+      properties: Object.assign({}, safeProperties, { first_touch: attribution.firstTouch })
     };
   }
 
   function send(payload) {
     log("sending", payload.event_name, payload);
-
     return fetch(endpoint, {
       method: "POST",
       mode: "cors",
       credentials: "omit",
       keepalive: true,
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    })
-      .then(function (response) {
-        if (!response.ok) {
-          throw new Error("Tracking request failed with status " + response.status);
-        }
-
-        log("stored", payload.event_name);
-        return true;
-      })
-      .catch(function (error) {
-        log("failed", payload.event_name, error);
-        return false;
-      });
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }).then(function (response) {
+      if (!response.ok) throw new Error("Tracking request failed with status " + response.status);
+      return true;
+    }).catch(function (error) {
+      log("failed", payload.event_name, error);
+      return false;
+    });
   }
 
   function track(eventName, properties) {
-    if (
-      typeof eventName !== "string" ||
-      !/^[a-z][a-z0-9_]{0,63}$/.test(eventName)
-    ) {
-      log("ignored invalid event name", eventName);
+    if (typeof eventName !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(eventName)) {
       return Promise.resolve(false);
     }
-
     return send(buildPayload(eventName, properties));
   }
 
   function trackPageView() {
     var currentUrl = window.location.href;
-    if (currentUrl === lastTrackedUrl) {
-      return;
-    }
-
+    if (currentUrl === lastTrackedUrl) return;
     lastTrackedUrl = currentUrl;
     track("page_view");
   }
 
   function propertiesFromElement(element) {
-    var customProperties = parseJson(
-      element.getAttribute("data-track-properties"),
-    );
-
-    return Object.assign(
-      {
-        element_id: element.id || null,
-        element_tag: element.tagName.toLowerCase(),
-        element_text: (element.textContent || "").trim().slice(0, 200) || null,
-      },
-      customProperties && typeof customProperties === "object"
-        ? customProperties
-        : {},
-    );
+    var customProperties = parseJson(element.getAttribute("data-track-properties"));
+    return Object.assign({
+      element_id: element.id || null,
+      element_tag: element.tagName.toLowerCase(),
+      element_text: (element.textContent || "").trim().slice(0, 200) || null
+    }, customProperties && typeof customProperties === "object" ? customProperties : {});
   }
 
-  document.addEventListener(
-    "click",
-    function (event) {
-      var target = event.target;
-      if (!target || typeof target.closest !== "function") {
-        return;
-      }
-
-      var trackedElement = target.closest("[data-track]");
-      if (!trackedElement) {
-        return;
-      }
-
-      var eventName = trackedElement.getAttribute("data-track");
-      track(eventName, propertiesFromElement(trackedElement));
-    },
-    true,
-  );
+  document.addEventListener("click", function (event) {
+    var target = event.target;
+    if (!target || typeof target.closest !== "function") return;
+    var trackedElement = target.closest("[data-track]");
+    if (!trackedElement) return;
+    track(trackedElement.getAttribute("data-track"), propertiesFromElement(trackedElement));
+  }, true);
 
   function installSpaNavigationTracking() {
     ["pushState", "replaceState"].forEach(function (methodName) {
       var original = window.history[methodName];
-      if (typeof original !== "function") {
-        return;
-      }
-
+      if (typeof original !== "function") return;
       window.history[methodName] = function () {
         var result = original.apply(this, arguments);
         window.setTimeout(trackPageView, 0);
         return result;
       };
     });
+    window.addEventListener("popstate", function () { window.setTimeout(trackPageView, 0); });
+  }
 
-    window.addEventListener("popstate", function () {
-      window.setTimeout(trackPageView, 0);
+  function installBehaviorTracking() {
+    var startedAt = Date.now();
+    var maxScroll = 0;
+    var visibleStartedAt = document.visibilityState === "visible" ? Date.now() : null;
+    var visibleMs = 0;
+    var sentScroll = {};
+    var sentTime = {};
+    var seenSections = {};
+    var summarySent = false;
+
+    function visibleSeconds() {
+      var total = visibleMs;
+      if (visibleStartedAt !== null) total += Date.now() - visibleStartedAt;
+      return Math.max(0, Math.round(total / 1000));
+    }
+
+    function updateScroll() {
+      var scrollable = document.documentElement.scrollHeight - window.innerHeight;
+      var depth = scrollable > 0 ? Math.round((window.scrollY / scrollable) * 100) : 100;
+      var milestones = [25, 50, 75, 90, 100];
+      depth = Math.max(0, Math.min(100, depth));
+      maxScroll = Math.max(maxScroll, depth);
+      milestones.forEach(function (milestone) {
+        if (depth >= milestone && !sentScroll[milestone]) {
+          sentScroll[milestone] = true;
+          track("scroll_depth", { depth: milestone, seconds_visible: visibleSeconds() });
+        }
+      });
+    }
+
+    [10, 30, 60, 120].forEach(function (seconds) {
+      window.setTimeout(function () {
+        if (document.visibilityState !== "visible" || sentTime[seconds]) return;
+        sentTime[seconds] = true;
+        track("time_milestone", { seconds: seconds, max_scroll_depth: maxScroll });
+      }, seconds * 1000);
     });
+
+    if ("IntersectionObserver" in window) {
+      var sections = document.querySelectorAll("[data-chapter]");
+      var observer = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          var element = entry.target;
+          var key = element.getAttribute("data-chapter") || element.id || "unknown";
+          if (!entry.isIntersecting || entry.intersectionRatio < 0.45 || seenSections[key]) return;
+          seenSections[key] = true;
+          track("section_view", {
+            section_id: element.id || null,
+            chapter: element.getAttribute("data-chapter") || null,
+            section_name: element.getAttribute("data-chapter-title") || null,
+            seconds_visible: visibleSeconds(),
+            max_scroll_depth: maxScroll
+          });
+        });
+      }, { threshold: [0.45] });
+      Array.prototype.forEach.call(sections, function (section) { observer.observe(section); });
+    }
+
+    document.addEventListener("click", function (event) {
+      var target = event.target;
+      if (!target || typeof target.closest !== "function") return;
+      var link = target.closest("a");
+      if (!link) return;
+      var isBuy = link.classList.contains("header-buy") ||
+        link.classList.contains("hero-buy-primary") ||
+        link.classList.contains("buy-button") ||
+        link.classList.contains("desktop-buy-dock") ||
+        Boolean(link.closest(".mobile-buy")) || Boolean(link.closest(".menu-panel"));
+      if (!isBuy) return;
+      track("buy_intent_timing", {
+        seconds_to_click: Math.max(0, Math.round((Date.now() - startedAt) / 1000)),
+        seconds_visible: visibleSeconds(),
+        max_scroll_depth: maxScroll,
+        placement: link.classList.contains("hero-buy-primary") ? "hero" :
+          link.classList.contains("header-buy") ? "header" :
+          link.classList.contains("desktop-buy-dock") ? "desktop_dock" :
+          link.closest(".mobile-buy") ? "mobile_sticky" :
+          link.closest(".menu-panel") ? "menu" : "offer"
+      });
+    }, true);
+
+    function sendSummary(reason) {
+      if (summarySent) return;
+      summarySent = true;
+      track("session_summary", {
+        reason: reason,
+        duration_seconds: Math.max(0, Math.round((Date.now() - startedAt) / 1000)),
+        visible_seconds: visibleSeconds(),
+        max_scroll_depth: maxScroll,
+        sections_viewed: Object.keys(seenSections).length,
+        quick_exit: visibleSeconds() < 10 && maxScroll < 25
+      });
+    }
+
+    window.addEventListener("error", function (event) {
+      track("javascript_error", {
+        message: String(event.message || "Unknown JavaScript error").slice(0, 500),
+        filename: event.filename || null,
+        line: event.lineno || null,
+        column: event.colno || null
+      });
+    });
+
+    window.addEventListener("unhandledrejection", function (event) {
+      track("javascript_error", {
+        message: String(event.reason || "Unhandled promise rejection").slice(0, 500),
+        kind: "unhandledrejection"
+      });
+    });
+
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "visible") {
+        visibleStartedAt = Date.now();
+      } else if (visibleStartedAt !== null) {
+        visibleMs += Date.now() - visibleStartedAt;
+        visibleStartedAt = null;
+      }
+    });
+
+    window.addEventListener("scroll", updateScroll, { passive: true });
+    window.addEventListener("pagehide", function () { sendSummary("pagehide"); });
+    updateScroll();
   }
 
   window.ConversionTracker = Object.freeze({
     track: track,
     visitorId: visitorId,
     sessionId: sessionId,
-    endpoint: endpoint,
+    endpoint: endpoint
   });
 
   installSpaNavigationTracking();
+  if (autoBehavior) installBehaviorTracking();
 
   if (autoPageViews) {
     if (document.readyState === "loading") {
@@ -324,9 +345,5 @@
     }
   }
 
-  log("ready", {
-    visitor_id: visitorId,
-    session_id: sessionId,
-    endpoint: endpoint,
-  });
+  log("ready", { visitor_id: visitorId, session_id: sessionId, endpoint: endpoint });
 })();

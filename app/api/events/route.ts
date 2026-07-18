@@ -118,6 +118,22 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function normalizedProperties(value: unknown): Record<string, unknown> {
+  const input = isPlainObject(value) ? value : {};
+  const internalTraffic =
+    input.internal_traffic === true || input.internal_traffic === "true";
+
+  if (!internalTraffic) {
+    return input;
+  }
+
+  return {
+    ...input,
+    internal_traffic: true,
+    test: true,
+  };
+}
+
 export function OPTIONS(request: NextRequest): NextResponse {
   const origin = request.headers.get("origin");
 
@@ -188,7 +204,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return jsonResponse(request, { ok: false, error: "Invalid timestamp." }, 400);
   }
 
-  const properties = isPlainObject(body.properties) ? body.properties : {};
+  const properties = normalizedProperties(body.properties);
   const serializedProperties = JSON.stringify(properties);
 
   if (serializedProperties.length > MAX_PROPERTIES_BYTES) {

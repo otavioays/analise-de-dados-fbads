@@ -21,6 +21,8 @@ export default function RootLayout({
           src="/tracker.js"
           strategy="afterInteractive"
           data-debug="true"
+          data-internal="true"
+          data-session-timeout-minutes="30"
         />
       </body>
     </html>

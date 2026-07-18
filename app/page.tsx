@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+import { getDatabaseConfig } from "@/lib/neon";
+
 const testEvents = [
   {
     name: "buy_button_click",
@@ -28,8 +30,17 @@ const testEvents = [
   },
 ];
 
+const dashboardLinks = [
+  { href: "/dashboard", label: "Abrir dashboard do funil", primary: true },
+  { href: "/behavior", label: "Ver comportamento na página", primary: false },
+  { href: "/sessions", label: "Explorar sessões individuais", primary: false },
+  { href: "/compare", label: "Comparar criativos", primary: false },
+  { href: "/ai-export", label: "Copiar dados para IA", primary: false },
+];
+
 export default function Home() {
-  const isConfigured = Boolean(process.env.DATABASE_URL);
+  const databaseConfig = getDatabaseConfig();
+  const isConfigured = databaseConfig.isConfigured;
 
   return (
     <main className="shell">
@@ -49,11 +60,19 @@ export default function Home() {
             </strong>
             <p>
               {isConfigured
-                ? "A captura está ativa e os painéis estão prontos para análise."
-                : "Conecte o banco e disponibilize DATABASE_URL na Vercel."}
+                ? `Conexão detectada por ${databaseConfig.variableName}. Os painéis estão liberados.`
+                : "Nenhuma variável de conexão do Neon foi encontrada neste deploy."}
             </p>
           </div>
         </div>
+
+        {!isConfigured && (
+          <div style={{ marginTop: 16 }}>
+            <Link className="primaryLink" href="/setup">
+              Configurar conexão do Neon
+            </Link>
+          </div>
+        )}
 
         <nav
           aria-label="Painéis de análise"
@@ -64,22 +83,36 @@ export default function Home() {
             marginTop: 20,
           }}
         >
-          <Link className="primaryLink" href="/dashboard">
-            Abrir dashboard do funil
-          </Link>
-          <Link className="secondaryLink" href="/behavior">
-            Ver comportamento na página
-          </Link>
-          <Link className="secondaryLink" href="/sessions">
-            Explorar sessões individuais
-          </Link>
-          <Link className="secondaryLink" href="/compare">
-            Comparar criativos
-          </Link>
-          <Link className="secondaryLink" href="/ai-export">
-            Copiar dados para IA
-          </Link>
+          {dashboardLinks.map((item) => {
+            const className = item.primary ? "primaryLink" : "secondaryLink";
+
+            if (isConfigured) {
+              return (
+                <Link className={className} href={item.href} key={item.href}>
+                  {item.label}
+                </Link>
+              );
+            }
+
+            return (
+              <span
+                aria-disabled="true"
+                className={className}
+                key={item.href}
+                title="Configure o Neon antes de abrir este painel"
+                style={{ cursor: "not-allowed", opacity: 0.45 }}
+              >
+                {item.label}
+              </span>
+            );
+          })}
         </nav>
+
+        {!isConfigured && (
+          <p className="subtitle" style={{ marginTop: 14, fontSize: 14 }}>
+            Os painéis ficam bloqueados para evitar o erro de servidor enquanto o banco não estiver conectado.
+          </p>
+        )}
       </section>
 
       <section className="panel">
@@ -88,7 +121,9 @@ export default function Home() {
             <p className="eyebrow">TESTE DO FUNIL</p>
             <h2>Dispare os eventos em ordem</h2>
           </div>
-          <span className="hint">Abra o console do navegador</span>
+          <span className="hint">
+            {isConfigured ? "Abra o console do navegador" : "Aguardando conexão com o banco"}
+          </span>
         </div>
 
         <div className="eventGrid">
@@ -99,6 +134,13 @@ export default function Home() {
               className="eventButton"
               data-track={event.name}
               data-track-properties={JSON.stringify(event.properties)}
+              disabled={!isConfigured}
+              title={
+                isConfigured
+                  ? undefined
+                  : "Configure o Neon antes de disparar eventos de teste"
+              }
+              style={!isConfigured ? { cursor: "not-allowed", opacity: 0.45 } : undefined}
             >
               <span>{event.label}</span>
               <code>{event.name}</code>

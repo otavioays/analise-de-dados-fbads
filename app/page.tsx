@@ -34,11 +34,11 @@ export default function Home() {
   return (
     <main className="shell">
       <section className="hero">
-        <p className="eyebrow">ITERAÇÃO 1 VALIDADA</p>
+        <p className="eyebrow">CENTRAL DE CONTROLE</p>
         <h1>Conversion Tracker</h1>
         <p className="subtitle">
-          Esta página continua como bancada de testes. O <code>page_view</code> é
-          disparado automaticamente e os botões simulam as etapas do funil.
+          Acesse os painéis de conversão e comportamento ou use esta página como
+          bancada para disparar eventos de teste.
         </p>
 
         <div className={isConfigured ? "status ready" : "status pending"}>
@@ -49,17 +49,28 @@ export default function Home() {
             </strong>
             <p>
               {isConfigured
-                ? "A captura está pronta. Use o dashboard para analisar o funil."
+                ? "A captura está ativa e os painéis estão prontos para análise."
                 : "Conecte o banco e disponibilize DATABASE_URL na Vercel."}
             </p>
           </div>
         </div>
 
-        <div style={{ marginTop: 20 }}>
+        <nav
+          aria-label="Painéis de análise"
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 12,
+            marginTop: 20,
+          }}
+        >
           <Link className="primaryLink" href="/dashboard">
             Abrir dashboard do funil
           </Link>
-        </div>
+          <Link className="secondaryLink" href="/behavior">
+            Ver comportamento na página
+          </Link>
+        </nav>
       </section>
 
       <section className="panel">
@@ -93,7 +104,8 @@ export default function Home() {
           <li>Neon conectado à Vercel.</li>
           <li>Tabela <code>analytics_events</code> criada.</li>
           <li>Eventos do funil gravados corretamente.</li>
-          <li>Dashboard agregado disponível em <code>/dashboard</code>.</li>
+          <li>Dashboard de conversão disponível em <code>/dashboard</code>.</li>
+          <li>Análise comportamental disponível em <code>/behavior</code>.</li>
         </ol>
       </section>
     </main>

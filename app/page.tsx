@@ -37,8 +37,8 @@ export default function Home() {
         <p className="eyebrow">CENTRAL DE CONTROLE</p>
         <h1>Conversion Tracker</h1>
         <p className="subtitle">
-          Acesse conversão, comportamento, jornadas e comparação de criativos ou
-          use esta página como bancada para disparar eventos de teste.
+          Acesse conversão, comportamento, jornadas, comparação de criativos e
+          exportação estruturada para IA ou use esta página como bancada de testes.
         </p>
 
         <div className={isConfigured ? "status ready" : "status pending"}>
@@ -75,6 +75,9 @@ export default function Home() {
           </Link>
           <Link className="secondaryLink" href="/compare">
             Comparar criativos
+          </Link>
+          <Link className="secondaryLink" href="/ai-export">
+            Copiar dados para IA
           </Link>
         </nav>
       </section>
@@ -114,6 +117,7 @@ export default function Home() {
           <li>Análise comportamental disponível em <code>/behavior</code>.</li>
           <li>Jornadas individuais disponíveis em <code>/sessions</code>.</li>
           <li>Ranking de criativos disponível em <code>/compare</code>.</li>
+          <li>Exportação para IA disponível em <code>/ai-export</code>.</li>
         </ol>
       </section>
     </main>

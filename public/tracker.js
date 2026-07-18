@@ -16,10 +16,18 @@
   var autoPageViews = script.getAttribute("data-auto-page-view") !== "false";
   var autoBehavior = script.getAttribute("data-auto-behavior") !== "false";
   var storagePrefix = script.getAttribute("data-storage-prefix") || "fbads_conversion_tracker";
+  var requestedTimeout = Number(script.getAttribute("data-session-timeout-minutes") || 30);
+  var sessionTimeoutMinutes = Number.isFinite(requestedTimeout)
+    ? Math.max(5, Math.min(240, requestedTimeout))
+    : 30;
+  var sessionTimeoutMs = sessionTimeoutMinutes * 60 * 1000;
+
   var visitorStorageKey = storagePrefix + "_visitor_id";
-  var sessionStorageKey = storagePrefix + "_session_id";
+  var sessionStorageKey = storagePrefix + "_session_v2";
+  var legacySessionStorageKey = storagePrefix + "_session_id";
   var firstTouchStorageKey = storagePrefix + "_first_touch";
-  var sessionAttributionKey = storagePrefix + "_session_attribution";
+  var sessionAttributionKey = storagePrefix + "_session_attribution_v2";
+  var internalTrafficStorageKey = storagePrefix + "_internal_traffic";
 
   function log() {
     if (!debug || !window.console) return;
@@ -40,11 +48,29 @@
   }
 
   function readStorage(storage, key) {
-    try { return storage.getItem(key); } catch (_error) { return null; }
+    try {
+      return storage.getItem(key);
+    } catch (_error) {
+      return null;
+    }
   }
 
   function writeStorage(storage, key, value) {
-    try { storage.setItem(key, value); return true; } catch (_error) { return false; }
+    try {
+      storage.setItem(key, value);
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function removeStorage(storage, key) {
+    try {
+      storage.removeItem(key);
+      return true;
+    } catch (_error) {
+      return false;
+    }
   }
 
   function getOrCreateId(storage, key) {
@@ -57,7 +83,11 @@
 
   function parseJson(value) {
     if (!value) return null;
-    try { return JSON.parse(value); } catch (_error) { return null; }
+    try {
+      return JSON.parse(value);
+    } catch (_error) {
+      return null;
+    }
   }
 
   function compactObject(object) {
@@ -81,17 +111,113 @@
     });
   }
 
-  function resolveAttribution() {
+  function hasAttribution(value) {
+    return Boolean(value && typeof value === "object" && Object.keys(value).length);
+  }
+
+  function applyInternalTrafficControls() {
+    var params = new URLSearchParams(window.location.search);
+    var queryValue = params.get("ct_internal");
+
+    if (queryValue === "1" || queryValue === "true") {
+      writeStorage(window.localStorage, internalTrafficStorageKey, "true");
+    } else if (queryValue === "0" || queryValue === "false") {
+      removeStorage(window.localStorage, internalTrafficStorageKey);
+    }
+  }
+
+  function isInternalTraffic() {
+    if (script.getAttribute("data-internal") === "true") return true;
+    return readStorage(window.localStorage, internalTrafficStorageKey) === "true";
+  }
+
+  function setInternalTraffic(enabled) {
+    if (enabled) {
+      writeStorage(window.localStorage, internalTrafficStorageKey, "true");
+    } else {
+      removeStorage(window.localStorage, internalTrafficStorageKey);
+    }
+    return isInternalTraffic();
+  }
+
+  function validSessionRecord(record) {
+    return Boolean(
+      record &&
+        typeof record.id === "string" &&
+        typeof record.started_at === "number" &&
+        typeof record.last_activity_at === "number" &&
+        Number.isFinite(record.started_at) &&
+        Number.isFinite(record.last_activity_at)
+    );
+  }
+
+  function sessionExpired(record, now) {
+    if (!validSessionRecord(record)) return true;
+    if (record.last_activity_at > now + 5 * 60 * 1000) return true;
+    return now - record.last_activity_at > sessionTimeoutMs;
+  }
+
+  function clearSessionAttribution() {
+    removeStorage(window.localStorage, sessionAttributionKey);
+  }
+
+  function createSession(now) {
+    var record = {
+      id: uuid(),
+      started_at: now,
+      last_activity_at: now,
+      version: 2
+    };
+    writeStorage(window.localStorage, sessionStorageKey, JSON.stringify(record));
+    removeStorage(window.sessionStorage, legacySessionStorageKey);
+    clearSessionAttribution();
+    return record;
+  }
+
+  function ensureSession() {
+    var now = Date.now();
+    var stored = parseJson(readStorage(window.localStorage, sessionStorageKey));
+    var isNew = sessionExpired(stored, now);
+    var record = isNew ? createSession(now) : stored;
+
+    record.last_activity_at = now;
+    writeStorage(window.localStorage, sessionStorageKey, JSON.stringify(record));
+
+    return { record: record, isNew: isNew };
+  }
+
+  function resetSession() {
+    removeStorage(window.localStorage, sessionStorageKey);
+    clearSessionAttribution();
+    lastTrackedPageKey = null;
+    return ensureSession().record.id;
+  }
+
+  function resolveAttribution(sessionRecord) {
     var current = readUrlAttribution();
     var firstTouch = parseJson(readStorage(window.localStorage, firstTouchStorageKey));
-    var sessionTouch = parseJson(readStorage(window.sessionStorage, sessionAttributionKey));
+    var storedSessionTouch = parseJson(
+      readStorage(window.localStorage, sessionAttributionKey)
+    );
+    var sessionTouch =
+      storedSessionTouch && storedSessionTouch.session_id === sessionRecord.id
+        ? storedSessionTouch.attribution
+        : null;
 
-    if (Object.keys(current).length) {
+    if (hasAttribution(current)) {
       sessionTouch = current;
-      writeStorage(window.sessionStorage, sessionAttributionKey, JSON.stringify(sessionTouch));
+      writeStorage(
+        window.localStorage,
+        sessionAttributionKey,
+        JSON.stringify({
+          session_id: sessionRecord.id,
+          attribution: sessionTouch,
+          captured_at: new Date().toISOString()
+        })
+      );
     }
 
-    if (!firstTouch && Object.keys(current).length) {
+    if (!firstTouch && hasAttribution(current)) {
       firstTouch = Object.assign({}, current, {
         landing_page: window.location.href,
         captured_at: new Date().toISOString()
@@ -99,7 +225,15 @@
       writeStorage(window.localStorage, firstTouchStorageKey, JSON.stringify(firstTouch));
     }
 
-    return { active: sessionTouch || current || firstTouch || {}, firstTouch: firstTouch || {} };
+    var active = hasAttribution(sessionTouch)
+      ? sessionTouch
+      : hasAttribution(current)
+        ? current
+        : hasAttribution(firstTouch)
+          ? firstTouch
+          : {};
+
+    return { active: active, firstTouch: firstTouch || {} };
   }
 
   function getDeviceType() {
@@ -109,20 +243,25 @@
     return "desktop";
   }
 
-  var visitorId = getOrCreateId(window.localStorage, visitorStorageKey);
-  var sessionId = getOrCreateId(window.sessionStorage, sessionStorageKey);
-  var lastTrackedUrl = null;
+  applyInternalTrafficControls();
 
-  function buildPayload(eventName, properties) {
-    var attribution = resolveAttribution();
+  var visitorId = getOrCreateId(window.localStorage, visitorStorageKey);
+  var initialSession = ensureSession().record;
+  var lastTrackedPageKey = null;
+
+  function buildPayload(eventName, properties, sessionRecord) {
+    var attribution = resolveAttribution(sessionRecord);
     var active = attribution.active;
-    var safeProperties = properties && typeof properties === "object" && !Array.isArray(properties) ? properties : {};
+    var safeProperties =
+      properties && typeof properties === "object" && !Array.isArray(properties)
+        ? properties
+        : {};
 
     return {
       event_id: uuid(),
       event_name: eventName,
       visitor_id: visitorId,
-      session_id: sessionId,
+      session_id: sessionRecord.id,
       client_timestamp: new Date().toISOString(),
       page_url: window.location.href,
       page_path: window.location.pathname + window.location.search,
@@ -137,7 +276,14 @@
       device_type: getDeviceType(),
       screen_width: window.screen && window.screen.width ? window.screen.width : null,
       language: navigator.language || null,
-      properties: Object.assign({}, safeProperties, { first_touch: attribution.firstTouch })
+      properties: Object.assign({}, safeProperties, {
+        first_touch: attribution.firstTouch,
+        internal_traffic: isInternalTraffic(),
+        session_started_at: new Date(sessionRecord.started_at).toISOString(),
+        session_last_activity_at: new Date(sessionRecord.last_activity_at).toISOString(),
+        session_timeout_minutes: sessionTimeoutMinutes,
+        session_storage_version: 2
+      })
     };
   }
 
@@ -150,45 +296,71 @@
       keepalive: true,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
-    }).then(function (response) {
-      if (!response.ok) throw new Error("Tracking request failed with status " + response.status);
-      return true;
-    }).catch(function (error) {
-      log("failed", payload.event_name, error);
-      return false;
-    });
+    })
+      .then(function (response) {
+        if (!response.ok) {
+          throw new Error("Tracking request failed with status " + response.status);
+        }
+        return true;
+      })
+      .catch(function (error) {
+        log("failed", payload.event_name, error);
+        return false;
+      });
   }
 
   function track(eventName, properties) {
     if (typeof eventName !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(eventName)) {
       return Promise.resolve(false);
     }
-    return send(buildPayload(eventName, properties));
+
+    var sessionState = ensureSession();
+    var record = sessionState.record;
+
+    if (sessionState.isNew && eventName !== "page_view") {
+      lastTrackedPageKey = null;
+      return send(
+        buildPayload("page_view", { session_restarted_after_inactivity: true }, record)
+      ).then(function () {
+        lastTrackedPageKey = record.id + "|" + window.location.href;
+        return send(buildPayload(eventName, properties, ensureSession().record));
+      });
+    }
+
+    return send(buildPayload(eventName, properties, record));
   }
 
   function trackPageView() {
-    var currentUrl = window.location.href;
-    if (currentUrl === lastTrackedUrl) return;
-    lastTrackedUrl = currentUrl;
+    var record = ensureSession().record;
+    var pageKey = record.id + "|" + window.location.href;
+    if (pageKey === lastTrackedPageKey) return;
+    lastTrackedPageKey = pageKey;
     track("page_view");
   }
 
   function propertiesFromElement(element) {
     var customProperties = parseJson(element.getAttribute("data-track-properties"));
-    return Object.assign({
-      element_id: element.id || null,
-      element_tag: element.tagName.toLowerCase(),
-      element_text: (element.textContent || "").trim().slice(0, 200) || null
-    }, customProperties && typeof customProperties === "object" ? customProperties : {});
+    return Object.assign(
+      {
+        element_id: element.id || null,
+        element_tag: element.tagName.toLowerCase(),
+        element_text: (element.textContent || "").trim().slice(0, 200) || null
+      },
+      customProperties && typeof customProperties === "object" ? customProperties : {}
+    );
   }
 
-  document.addEventListener("click", function (event) {
-    var target = event.target;
-    if (!target || typeof target.closest !== "function") return;
-    var trackedElement = target.closest("[data-track]");
-    if (!trackedElement) return;
-    track(trackedElement.getAttribute("data-track"), propertiesFromElement(trackedElement));
-  }, true);
+  document.addEventListener(
+    "click",
+    function (event) {
+      var target = event.target;
+      if (!target || typeof target.closest !== "function") return;
+      var trackedElement = target.closest("[data-track]");
+      if (!trackedElement) return;
+      track(trackedElement.getAttribute("data-track"), propertiesFromElement(trackedElement));
+    },
+    true
+  );
 
   function installSpaNavigationTracking() {
     ["pushState", "replaceState"].forEach(function (methodName) {
@@ -200,7 +372,9 @@
         return result;
       };
     });
-    window.addEventListener("popstate", function () { window.setTimeout(trackPageView, 0); });
+    window.addEventListener("popstate", function () {
+      window.setTimeout(trackPageView, 0);
+    });
   }
 
   function installBehaviorTracking() {
@@ -243,46 +417,65 @@
 
     if ("IntersectionObserver" in window) {
       var sections = document.querySelectorAll("[data-chapter]");
-      var observer = new IntersectionObserver(function (entries) {
-        entries.forEach(function (entry) {
-          var element = entry.target;
-          var key = element.getAttribute("data-chapter") || element.id || "unknown";
-          if (!entry.isIntersecting || entry.intersectionRatio < 0.45 || seenSections[key]) return;
-          seenSections[key] = true;
-          track("section_view", {
-            section_id: element.id || null,
-            chapter: element.getAttribute("data-chapter") || null,
-            section_name: element.getAttribute("data-chapter-title") || null,
-            seconds_visible: visibleSeconds(),
-            max_scroll_depth: maxScroll
+      var observer = new IntersectionObserver(
+        function (entries) {
+          entries.forEach(function (entry) {
+            var element = entry.target;
+            var key = element.getAttribute("data-chapter") || element.id || "unknown";
+            if (!entry.isIntersecting || entry.intersectionRatio < 0.45 || seenSections[key]) {
+              return;
+            }
+            seenSections[key] = true;
+            track("section_view", {
+              section_id: element.id || null,
+              chapter: element.getAttribute("data-chapter") || null,
+              section_name: element.getAttribute("data-chapter-title") || null,
+              seconds_visible: visibleSeconds(),
+              max_scroll_depth: maxScroll
+            });
           });
-        });
-      }, { threshold: [0.45] });
-      Array.prototype.forEach.call(sections, function (section) { observer.observe(section); });
+        },
+        { threshold: [0.45] }
+      );
+      Array.prototype.forEach.call(sections, function (section) {
+        observer.observe(section);
+      });
     }
 
-    document.addEventListener("click", function (event) {
-      var target = event.target;
-      if (!target || typeof target.closest !== "function") return;
-      var link = target.closest("a");
-      if (!link) return;
-      var isBuy = link.classList.contains("header-buy") ||
-        link.classList.contains("hero-buy-primary") ||
-        link.classList.contains("buy-button") ||
-        link.classList.contains("desktop-buy-dock") ||
-        Boolean(link.closest(".mobile-buy")) || Boolean(link.closest(".menu-panel"));
-      if (!isBuy) return;
-      track("buy_intent_timing", {
-        seconds_to_click: Math.max(0, Math.round((Date.now() - startedAt) / 1000)),
-        seconds_visible: visibleSeconds(),
-        max_scroll_depth: maxScroll,
-        placement: link.classList.contains("hero-buy-primary") ? "hero" :
-          link.classList.contains("header-buy") ? "header" :
-          link.classList.contains("desktop-buy-dock") ? "desktop_dock" :
-          link.closest(".mobile-buy") ? "mobile_sticky" :
-          link.closest(".menu-panel") ? "menu" : "offer"
-      });
-    }, true);
+    document.addEventListener(
+      "click",
+      function (event) {
+        var target = event.target;
+        if (!target || typeof target.closest !== "function") return;
+        var link = target.closest("a");
+        if (!link) return;
+        var isBuy =
+          link.classList.contains("header-buy") ||
+          link.classList.contains("hero-buy-primary") ||
+          link.classList.contains("buy-button") ||
+          link.classList.contains("desktop-buy-dock") ||
+          Boolean(link.closest(".mobile-buy")) ||
+          Boolean(link.closest(".menu-panel"));
+        if (!isBuy) return;
+        track("buy_intent_timing", {
+          seconds_to_click: Math.max(0, Math.round((Date.now() - startedAt) / 1000)),
+          seconds_visible: visibleSeconds(),
+          max_scroll_depth: maxScroll,
+          placement: link.classList.contains("hero-buy-primary")
+            ? "hero"
+            : link.classList.contains("header-buy")
+              ? "header"
+              : link.classList.contains("desktop-buy-dock")
+                ? "desktop_dock"
+                : link.closest(".mobile-buy")
+                  ? "mobile_sticky"
+                  : link.closest(".menu-panel")
+                    ? "menu"
+                    : "offer"
+        });
+      },
+      true
+    );
 
     function sendSummary(reason) {
       if (summarySent) return;
@@ -323,16 +516,33 @@
     });
 
     window.addEventListener("scroll", updateScroll, { passive: true });
-    window.addEventListener("pagehide", function () { sendSummary("pagehide"); });
+    window.addEventListener("pagehide", function () {
+      sendSummary("pagehide");
+    });
     updateScroll();
   }
 
-  window.ConversionTracker = Object.freeze({
+  var api = {
     track: track,
+    endpoint: endpoint,
     visitorId: visitorId,
-    sessionId: sessionId,
-    endpoint: endpoint
+    getSessionId: function () {
+      return ensureSession().record.id;
+    },
+    resetSession: resetSession,
+    isInternalTraffic: isInternalTraffic,
+    setInternalTraffic: setInternalTraffic,
+    sessionTimeoutMinutes: sessionTimeoutMinutes
+  };
+
+  Object.defineProperty(api, "sessionId", {
+    enumerable: true,
+    get: function () {
+      return ensureSession().record.id;
+    }
   });
+
+  window.ConversionTracker = Object.freeze(api);
 
   installSpaNavigationTracking();
   if (autoBehavior) installBehaviorTracking();
@@ -345,5 +555,11 @@
     }
   }
 
-  log("ready", { visitor_id: visitorId, session_id: sessionId, endpoint: endpoint });
+  log("ready", {
+    visitor_id: visitorId,
+    session_id: initialSession.id,
+    session_timeout_minutes: sessionTimeoutMinutes,
+    internal_traffic: isInternalTraffic(),
+    endpoint: endpoint
+  });
 })();

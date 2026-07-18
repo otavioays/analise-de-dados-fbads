@@ -37,6 +37,7 @@ const dashboardLinks = [
   { href: "/compare", label: "Comparar criativos", primary: false },
   { href: "/ai-export", label: "Copiar dados para IA", primary: false },
   { href: "/session-lab", label: "Testar integridade da sessão", primary: false },
+  { href: "/shopify-webhook", label: "Configurar compras da Shopify", primary: false },
 ];
 
 export default function Home() {
@@ -162,6 +163,7 @@ export default function Home() {
           <li>Jornadas individuais disponíveis em <code>/sessions</code>.</li>
           <li>Ranking de criativos disponível em <code>/compare</code>.</li>
           <li>Exportação para IA disponível em <code>/ai-export</code>.</li>
+          <li>Webhook de compras Shopify disponível em <code>/api/shopify/orders-paid</code>.</li>
         </ol>
       </section>
     </main>

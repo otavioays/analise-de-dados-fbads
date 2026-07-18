@@ -31,12 +31,13 @@ type ScoredArea = {
   key: "traffic" | "landing" | "offer" | "checkout";
   label: string;
   score: number | null;
-  directionalScore: number;
+  directionalScore: number | null;
   status: ScoreStatus;
   minimumSample: string;
 };
 
 const validPeriods = new Set([1, 7, 14, 30, 90]);
+const MIN_DIRECTIONAL_VISITORS = 5;
 const MIN_DIAGNOSTIC_VISITORS = 30;
 const MIN_CREATIVE_VISITORS = 20;
 const MIN_CHECKOUT_VISITORS = 10;
@@ -109,6 +110,10 @@ function statusLabel(status: ScoreStatus): string {
   return "dados insuficientes";
 }
 
+function peopleLabel(value: number, singular: string, plural: string): string {
+  return `${value} ${value === 1 ? singular : plural}`;
+}
+
 export default async function AiExportPage({
   searchParams,
 }: {
@@ -123,275 +128,337 @@ export default async function AiExportPage({
   const cpc = boundedInput(firstParam(params.cpc), 100_000);
   const sql = getSql();
 
-  const [summaryResult, concentrationResult, creativeResult, sessionResult, filterResult] =
-    await Promise.all([
-      sql`
-        with base_events as (
-          select *
-          from public.analytics_events
-          where received_at >= now() - (${days} * interval '1 day')
-            and coalesce(properties ->> 'test', 'false') <> 'true'
-            and coalesce(properties ->> 'internal_traffic', 'false') <> 'true'
-        ), attributed as (
-          select distinct on (session_id)
-            session_id,
-            visitor_id,
-            client_timestamp as started_at,
-            device_type,
-            coalesce(nullif(utm_source, ''), nullif(properties #>> '{first_touch,utm_source}', '')) as source,
-            coalesce(nullif(utm_medium, ''), nullif(properties #>> '{first_touch,utm_medium}', '')) as medium,
-            coalesce(nullif(utm_campaign, ''), nullif(properties #>> '{first_touch,utm_campaign}', '')) as campaign,
-            coalesce(nullif(utm_content, ''), nullif(properties #>> '{first_touch,utm_content}', '')) as content,
-            coalesce(nullif(fbclid, ''), nullif(properties #>> '{first_touch,fbclid}', '')) as fbclid,
-            coalesce(nullif(properties ->> 'session_storage_version', '')::integer, 1) as session_storage_version
-          from base_events
-          where event_name = 'page_view'
-          order by session_id, client_timestamp asc
-        ), cohort as (
-          select *
-          from attributed
-          where (${campaign} = '' or coalesce(campaign, '') = ${campaign})
-            and (${content} = '' or coalesce(content, '') = ${content})
-        ), summaries as (
-          select
-            session_id,
-            sum(coalesce(nullif(properties ->> 'visible_seconds', '')::numeric, 0)) as visible_seconds,
-            max(coalesce(nullif(properties ->> 'max_scroll_depth', '')::numeric, 0)) as max_scroll,
-            bool_and(coalesce((properties ->> 'quick_exit')::boolean, false)) as quick_exit,
-            count(*) as summary_count
-          from base_events
-          where event_name = 'session_summary'
-          group by session_id
-        ), event_rollup as (
-          select
-            session_id,
-            count(*) as event_count,
-            bool_or(event_name = 'cta_impression') as cta_impression,
-            bool_or(event_name = 'buy_button_click') as clicked,
-            bool_or(event_name = 'add_to_cart') as added_to_cart,
-            bool_or(event_name = 'checkout_started') as checkout,
-            bool_or(event_name = 'purchase') as purchase,
-            count(*) filter (where event_name = 'javascript_error') as javascript_errors
-          from base_events
-          group by session_id
-        ), facts as (
-          select
-            c.*,
-            coalesce(r.event_count, 0) as event_count,
-            coalesce(r.cta_impression, false) as cta_impression,
-            coalesce(r.clicked, false) as clicked,
-            coalesce(r.added_to_cart, false) as added_to_cart,
-            coalesce(r.checkout, false) as checkout,
-            coalesce(r.purchase, false) as purchase,
-            coalesce(r.javascript_errors, 0) as javascript_errors,
-            s.visible_seconds,
-            s.max_scroll,
-            s.quick_exit,
-            s.summary_count
-          from cohort c
-          left join event_rollup r on r.session_id = c.session_id
-          left join summaries s on s.session_id = c.session_id
-        )
+  const [summaryResult, creativeResult, sessionResult, filterResult] = await Promise.all([
+    sql`
+      with base_events as (
+        select *
+        from public.analytics_events
+        where received_at >= now() - (${days} * interval '1 day')
+          and coalesce(properties ->> 'test', 'false') <> 'true'
+          and coalesce(properties ->> 'internal_traffic', 'false') <> 'true'
+      ), entries as (
+        select distinct on (session_id)
+          session_id,
+          visitor_id,
+          client_timestamp as started_at,
+          device_type,
+          coalesce(nullif(utm_source, ''), nullif(properties #>> '{first_touch,utm_source}', '')) as source,
+          coalesce(nullif(utm_medium, ''), nullif(properties #>> '{first_touch,utm_medium}', '')) as medium,
+          coalesce(nullif(utm_campaign, ''), nullif(properties #>> '{first_touch,utm_campaign}', '')) as campaign,
+          coalesce(nullif(utm_content, ''), nullif(properties #>> '{first_touch,utm_content}', '')) as content,
+          coalesce(nullif(fbclid, ''), nullif(properties #>> '{first_touch,fbclid}', '')) as fbclid,
+          coalesce(nullif(properties ->> 'session_storage_version', '')::integer, 1) as session_storage_version
+        from base_events
+        where event_name = 'page_view'
+        order by session_id, client_timestamp asc
+      ), cohort as (
+        select *
+        from entries
+        where (${campaign} = '' or coalesce(campaign, '') = ${campaign})
+          and (${content} = '' or coalesce(content, '') = ${content})
+      ), legacy_summaries as (
+        select distinct on (e.session_id)
+          e.session_id,
+          coalesce(nullif(e.properties ->> 'visible_seconds', '')::numeric, 0) as visible_seconds,
+          coalesce(nullif(e.properties ->> 'max_scroll_depth', '')::numeric, 0) as max_scroll,
+          coalesce((e.properties ->> 'quick_exit')::boolean, false) as quick_exit,
+          1 as page_instances,
+          'legacy_latest_summary'::text as aggregation_mode
+        from base_events e
+        join cohort c on c.session_id = e.session_id and c.session_storage_version < 2
+        where e.event_name = 'session_summary'
+        order by e.session_id, e.client_timestamp desc
+      ), v2_page_summaries as (
+        select distinct on (e.session_id, e.properties ->> 'page_instance_id')
+          e.session_id,
+          e.properties ->> 'page_instance_id' as page_instance_id,
+          coalesce(nullif(e.properties ->> 'visible_seconds', '')::numeric, 0) as visible_seconds,
+          coalesce(nullif(e.properties ->> 'max_scroll_depth', '')::numeric, 0) as max_scroll,
+          coalesce((e.properties ->> 'quick_exit')::boolean, false) as quick_exit
+        from base_events e
+        join cohort c on c.session_id = e.session_id and c.session_storage_version >= 2
+        where e.event_name = 'session_summary'
+          and nullif(e.properties ->> 'page_instance_id', '') is not null
+        order by e.session_id, e.properties ->> 'page_instance_id', e.client_timestamp desc
+      ), v2_summaries as (
         select
-          count(distinct visitor_id) as visitors,
-          count(*) as sessions,
-          count(*) filter (where summary_count is not null) as summary_sessions,
-          count(*) filter (where session_storage_version >= 2) as session_v2_sessions,
-          count(*) filter (where campaign is not null) as attributed_sessions,
-          count(distinct visitor_id) filter (where campaign is not null) as attributed_visitors,
-          count(*) filter (where campaign is null) as unattributed_sessions,
-          count(distinct visitor_id) filter (where campaign is null) as unattributed_visitors,
-          count(distinct fbclid) filter (where fbclid is not null) as paid_click_ids,
-          count(*) filter (where source = 'facebook' and fbclid is null) as facebook_sessions_without_fbclid,
-          count(distinct visitor_id) filter (where cta_impression) as cta_impression_visitors,
-          count(distinct visitor_id) filter (where clicked) as click_visitors,
-          count(distinct visitor_id) filter (where added_to_cart) as cart_visitors,
-          count(distinct visitor_id) filter (where checkout) as checkout_visitors,
-          count(distinct visitor_id) filter (where purchase) as purchase_visitors,
-          count(distinct visitor_id) filter (where campaign is not null and cta_impression) as attributed_cta_impression_visitors,
-          count(distinct visitor_id) filter (where campaign is not null and clicked) as attributed_click_visitors,
-          count(distinct visitor_id) filter (where campaign is not null and added_to_cart) as attributed_cart_visitors,
-          count(distinct visitor_id) filter (where campaign is not null and checkout) as attributed_checkout_visitors,
-          count(distinct visitor_id) filter (where campaign is not null and purchase) as attributed_purchase_visitors,
-          coalesce(avg(visible_seconds) filter (where summary_count is not null), 0) as avg_visible_seconds,
-          coalesce(avg(max_scroll) filter (where summary_count is not null), 0) as avg_scroll,
-          count(*) filter (where quick_exit) as quick_exits,
-          coalesce(avg(visible_seconds) filter (where campaign is not null and summary_count is not null), 0) as attributed_avg_visible_seconds,
-          coalesce(avg(max_scroll) filter (where campaign is not null and summary_count is not null), 0) as attributed_avg_scroll,
-          count(*) filter (where campaign is not null and summary_count is not null) as attributed_summary_sessions,
-          count(*) filter (where campaign is not null and quick_exit) as attributed_quick_exits,
-          coalesce(sum(javascript_errors), 0) as javascript_errors,
-          count(*) filter (where device_type = 'mobile') as mobile_sessions,
-          count(*) filter (where device_type = 'desktop') as desktop_sessions,
-          count(*) filter (where device_type = 'tablet') as tablet_sessions
-        from facts
-      `,
-      sql`
-        with base_events as (
-          select *
-          from public.analytics_events
-          where received_at >= now() - (${days} * interval '1 day')
-            and coalesce(properties ->> 'test', 'false') <> 'true'
-            and coalesce(properties ->> 'internal_traffic', 'false') <> 'true'
-        ), attributed as (
-          select distinct on (session_id)
-            session_id,
-            visitor_id,
-            coalesce(nullif(utm_campaign, ''), nullif(properties #>> '{first_touch,utm_campaign}', '')) as campaign,
-            coalesce(nullif(utm_content, ''), nullif(properties #>> '{first_touch,utm_content}', '')) as content
-          from base_events
-          where event_name = 'page_view'
-          order by session_id, client_timestamp asc
-        ), cohort as (
-          select *
-          from attributed
-          where (${campaign} = '' or coalesce(campaign, '') = ${campaign})
-            and (${content} = '' or coalesce(content, '') = ${content})
-        ), visitor_counts as (
-          select visitor_id, count(*) as sessions
-          from cohort
-          group by visitor_id
-        )
+          session_id,
+          sum(visible_seconds) as visible_seconds,
+          max(max_scroll) as max_scroll,
+          bool_and(quick_exit) as quick_exit,
+          count(*)::integer as page_instances,
+          'v2_distinct_page_instances'::text as aggregation_mode
+        from v2_page_summaries
+        group by session_id
+      ), v2_fallback as (
+        select distinct on (e.session_id)
+          e.session_id,
+          coalesce(nullif(e.properties ->> 'visible_seconds', '')::numeric, 0) as visible_seconds,
+          coalesce(nullif(e.properties ->> 'max_scroll_depth', '')::numeric, 0) as max_scroll,
+          coalesce((e.properties ->> 'quick_exit')::boolean, false) as quick_exit,
+          1 as page_instances,
+          'v2_latest_summary_fallback'::text as aggregation_mode
+        from base_events e
+        join cohort c on c.session_id = e.session_id and c.session_storage_version >= 2
+        where e.event_name = 'session_summary'
+          and not exists (
+            select 1 from v2_summaries s where s.session_id = e.session_id
+          )
+        order by e.session_id, e.client_timestamp desc
+      ), summaries as (
+        select * from legacy_summaries
+        union all
+        select * from v2_summaries
+        union all
+        select * from v2_fallback
+      ), event_rollup as (
         select
-          coalesce(max(sessions), 0) as max_sessions_per_visitor,
-          count(*) filter (where sessions > 1) as visitors_with_multiple_sessions,
-          coalesce(sum(sessions), 0) as sessions,
-          count(*) as visitors,
-          coalesce(max(sessions)::numeric / nullif(sum(sessions), 0) * 100, 0) as top_visitor_session_share_percent
-        from visitor_counts
-      `,
-      sql`
-        with base_events as (
-          select *
-          from public.analytics_events
-          where received_at >= now() - (${days} * interval '1 day')
-            and coalesce(properties ->> 'test', 'false') <> 'true'
-            and coalesce(properties ->> 'internal_traffic', 'false') <> 'true'
-        ), attributed as (
-          select distinct on (session_id)
-            session_id,
-            visitor_id,
-            coalesce(nullif(utm_campaign, ''), nullif(properties #>> '{first_touch,utm_campaign}', '')) as campaign,
-            coalesce(nullif(utm_content, ''), nullif(properties #>> '{first_touch,utm_content}', '')) as content,
-            coalesce(nullif(fbclid, ''), nullif(properties #>> '{first_touch,fbclid}', '')) as fbclid
-          from base_events
-          where event_name = 'page_view'
-          order by session_id, client_timestamp asc
-        ), summaries as (
-          select
-            session_id,
-            sum(coalesce(nullif(properties ->> 'visible_seconds', '')::numeric, 0)) as visible_seconds,
-            max(coalesce(nullif(properties ->> 'max_scroll_depth', '')::numeric, 0)) as max_scroll
-          from base_events
-          where event_name = 'session_summary'
-          group by session_id
-        ), rollup as (
-          select
-            session_id,
-            bool_or(event_name = 'cta_impression') as cta_impression,
-            bool_or(event_name = 'buy_button_click') as clicked,
-            bool_or(event_name = 'add_to_cart') as cart,
-            bool_or(event_name = 'checkout_started') as checkout,
-            bool_or(event_name = 'purchase') as purchase
-          from base_events
-          group by session_id
-        )
+          session_id,
+          count(*) as event_count,
+          bool_or(event_name = 'cta_impression') as cta_impression,
+          bool_or(event_name = 'buy_button_click') as clicked,
+          bool_or(event_name = 'add_to_cart') as added_to_cart,
+          bool_or(event_name = 'checkout_started') as checkout,
+          bool_or(event_name = 'purchase') as purchase,
+          count(*) filter (where event_name = 'javascript_error') as javascript_errors
+        from base_events
+        group by session_id
+      ), facts as (
         select
-          a.campaign,
-          a.content,
-          count(distinct a.visitor_id) as visitors,
-          count(*) as sessions,
-          count(distinct a.fbclid) filter (where a.fbclid is not null) as paid_click_ids,
-          count(*) filter (where s.session_id is not null) as summary_sessions,
-          coalesce(avg(s.visible_seconds) filter (where s.session_id is not null), 0) as avg_visible_seconds,
-          coalesce(avg(s.max_scroll) filter (where s.session_id is not null), 0) as avg_scroll,
-          count(distinct a.visitor_id) filter (where coalesce(r.cta_impression, false)) as cta_impression_visitors,
-          count(distinct a.visitor_id) filter (where coalesce(r.clicked, false)) as click_visitors,
-          count(distinct a.visitor_id) filter (where coalesce(r.cart, false)) as cart_visitors,
-          count(distinct a.visitor_id) filter (where coalesce(r.checkout, false)) as checkout_visitors,
-          count(distinct a.visitor_id) filter (where coalesce(r.purchase, false)) as purchase_visitors
-        from attributed a
-        left join summaries s on s.session_id = a.session_id
-        left join rollup r on r.session_id = a.session_id
-        where (${campaign} = '' or coalesce(a.campaign, '') = ${campaign})
-          and (${content} = '' or coalesce(a.content, '') = ${content})
-        group by a.campaign, a.content
-        order by purchase_visitors desc, checkout_visitors desc, click_visitors desc, visitors desc
-        limit 30
-      `,
-      sql`
-        with base_events as (
-          select *
-          from public.analytics_events
-          where received_at >= now() - (${days} * interval '1 day')
-            and coalesce(properties ->> 'test', 'false') <> 'true'
-            and coalesce(properties ->> 'internal_traffic', 'false') <> 'true'
-        ), attributed as (
-          select distinct on (session_id)
-            session_id,
-            visitor_id,
-            client_timestamp as started_at,
-            device_type,
-            coalesce(nullif(utm_source, ''), nullif(properties #>> '{first_touch,utm_source}', '')) as source,
-            coalesce(nullif(utm_medium, ''), nullif(properties #>> '{first_touch,utm_medium}', '')) as medium,
-            coalesce(nullif(utm_campaign, ''), nullif(properties #>> '{first_touch,utm_campaign}', '')) as campaign,
-            coalesce(nullif(utm_content, ''), nullif(properties #>> '{first_touch,utm_content}', '')) as content,
-            coalesce(nullif(fbclid, ''), nullif(properties #>> '{first_touch,fbclid}', '')) as fbclid,
-            coalesce(nullif(properties ->> 'session_storage_version', '')::integer, 1) as session_storage_version,
-            properties ->> 'session_started_at' as session_started_at
-          from base_events
-          where event_name = 'page_view'
-          order by session_id, client_timestamp asc
-        ), rollup as (
-          select
-            session_id,
-            count(*) as event_count,
-            bool_or(event_name = 'cta_impression') as cta_impression,
-            bool_or(event_name = 'buy_button_click') as clicked,
-            bool_or(event_name = 'checkout_started') as checkout,
-            bool_or(event_name = 'purchase') as purchase
-          from base_events
-          group by session_id
-        )
-        select
-          a.*,
+          c.*,
           coalesce(r.event_count, 0) as event_count,
           coalesce(r.cta_impression, false) as cta_impression,
           coalesce(r.clicked, false) as clicked,
+          coalesce(r.added_to_cart, false) as added_to_cart,
           coalesce(r.checkout, false) as checkout,
-          coalesce(r.purchase, false) as purchase
-        from attributed a
-        left join rollup r on r.session_id = a.session_id
-        where (${campaign} = '' or coalesce(a.campaign, '') = ${campaign})
-          and (${content} = '' or coalesce(a.content, '') = ${content})
-        order by a.started_at desc
-        limit 20
-      `,
-      sql`
-        select distinct
-          coalesce(nullif(utm_campaign, ''), nullif(properties #>> '{first_touch,utm_campaign}', '')) as utm_campaign,
-          coalesce(nullif(utm_content, ''), nullif(properties #>> '{first_touch,utm_content}', '')) as utm_content
+          coalesce(r.purchase, false) as purchase,
+          coalesce(r.javascript_errors, 0) as javascript_errors,
+          s.visible_seconds,
+          s.max_scroll,
+          s.quick_exit,
+          s.page_instances,
+          s.aggregation_mode
+        from cohort c
+        left join event_rollup r on r.session_id = c.session_id
+        left join summaries s on s.session_id = c.session_id
+      ), visitor_flags as (
+        select
+          visitor_id,
+          bool_or(campaign is not null) as has_attributed_session,
+          bool_or(campaign is null) as has_unattributed_session,
+          count(*) as sessions
+        from facts
+        group by visitor_id
+      )
+      select
+        count(distinct visitor_id) as visitors,
+        count(*) as sessions,
+        count(*) filter (where aggregation_mode is not null) as summary_sessions,
+        coalesce(sum(page_instances) filter (where aggregation_mode is not null), 0) as summary_page_instances,
+        count(*) filter (where session_storage_version >= 2) as session_v2_sessions,
+        count(*) filter (where campaign is not null) as attributed_sessions,
+        (select count(*) from visitor_flags where has_attributed_session) as attributed_visitors,
+        count(*) filter (where campaign is null) as unattributed_sessions,
+        (select count(*) from visitor_flags where not has_attributed_session) as unattributed_visitors,
+        (select count(*) from visitor_flags where has_attributed_session and has_unattributed_session) as mixed_attribution_visitors,
+        count(distinct fbclid) filter (where fbclid is not null) as paid_click_ids,
+        count(*) filter (
+          where lower(coalesce(source, '')) in ('facebook', 'fb', 'meta') and fbclid is null
+        ) as facebook_sessions_without_fbclid,
+        count(distinct visitor_id) filter (where cta_impression) as cta_impression_visitors,
+        count(distinct visitor_id) filter (where clicked) as click_visitors,
+        count(distinct visitor_id) filter (where added_to_cart) as cart_visitors,
+        count(distinct visitor_id) filter (where checkout) as checkout_visitors,
+        count(distinct visitor_id) filter (where purchase) as purchase_visitors,
+        count(distinct visitor_id) filter (where campaign is not null and cta_impression) as attributed_cta_impression_visitors,
+        count(distinct visitor_id) filter (where campaign is not null and clicked) as attributed_click_visitors,
+        count(distinct visitor_id) filter (where campaign is not null and added_to_cart) as attributed_cart_visitors,
+        count(distinct visitor_id) filter (where campaign is not null and checkout) as attributed_checkout_visitors,
+        count(distinct visitor_id) filter (where campaign is not null and purchase) as attributed_purchase_visitors,
+        coalesce(avg(visible_seconds) filter (where aggregation_mode is not null), 0) as avg_visible_seconds,
+        coalesce(avg(max_scroll) filter (where aggregation_mode is not null), 0) as avg_scroll,
+        count(*) filter (where quick_exit) as quick_exits,
+        coalesce(avg(visible_seconds) filter (where campaign is not null and aggregation_mode is not null), 0) as attributed_avg_visible_seconds,
+        coalesce(avg(max_scroll) filter (where campaign is not null and aggregation_mode is not null), 0) as attributed_avg_scroll,
+        count(*) filter (where campaign is not null and aggregation_mode is not null) as attributed_summary_sessions,
+        count(*) filter (where campaign is not null and quick_exit) as attributed_quick_exits,
+        coalesce(sum(javascript_errors), 0) as javascript_errors,
+        count(*) filter (where device_type = 'mobile') as mobile_sessions,
+        count(*) filter (where device_type = 'desktop') as desktop_sessions,
+        count(*) filter (where device_type = 'tablet') as tablet_sessions,
+        (select coalesce(max(sessions), 0) from visitor_flags) as max_sessions_per_visitor,
+        (select count(*) from visitor_flags where sessions > 1) as visitors_with_multiple_sessions,
+        (select coalesce(max(sessions)::numeric / nullif(sum(sessions), 0) * 100, 0) from visitor_flags) as top_visitor_session_share_percent
+      from facts
+    `,
+    sql`
+      with base_events as (
+        select *
         from public.analytics_events
-        where received_at >= now() - interval '90 days'
-          and event_name = 'page_view'
+        where received_at >= now() - (${days} * interval '1 day')
           and coalesce(properties ->> 'test', 'false') <> 'true'
           and coalesce(properties ->> 'internal_traffic', 'false') <> 'true'
-        order by 1 nulls last, 2 nulls last
-        limit 250
-      `,
-    ]);
+      ), entries as (
+        select distinct on (session_id)
+          session_id,
+          visitor_id,
+          coalesce(nullif(utm_campaign, ''), nullif(properties #>> '{first_touch,utm_campaign}', '')) as campaign,
+          coalesce(nullif(utm_content, ''), nullif(properties #>> '{first_touch,utm_content}', '')) as content,
+          coalesce(nullif(fbclid, ''), nullif(properties #>> '{first_touch,fbclid}', '')) as fbclid,
+          coalesce(nullif(properties ->> 'session_storage_version', '')::integer, 1) as session_storage_version
+        from base_events
+        where event_name = 'page_view'
+        order by session_id, client_timestamp asc
+      ), cohort as (
+        select *
+        from entries
+        where (${campaign} = '' or coalesce(campaign, '') = ${campaign})
+          and (${content} = '' or coalesce(content, '') = ${content})
+      ), legacy_summaries as (
+        select distinct on (e.session_id)
+          e.session_id,
+          coalesce(nullif(e.properties ->> 'visible_seconds', '')::numeric, 0) as visible_seconds,
+          coalesce(nullif(e.properties ->> 'max_scroll_depth', '')::numeric, 0) as max_scroll
+        from base_events e
+        join cohort c on c.session_id = e.session_id and c.session_storage_version < 2
+        where e.event_name = 'session_summary'
+        order by e.session_id, e.client_timestamp desc
+      ), v2_page_summaries as (
+        select distinct on (e.session_id, e.properties ->> 'page_instance_id')
+          e.session_id,
+          e.properties ->> 'page_instance_id' as page_instance_id,
+          coalesce(nullif(e.properties ->> 'visible_seconds', '')::numeric, 0) as visible_seconds,
+          coalesce(nullif(e.properties ->> 'max_scroll_depth', '')::numeric, 0) as max_scroll
+        from base_events e
+        join cohort c on c.session_id = e.session_id and c.session_storage_version >= 2
+        where e.event_name = 'session_summary'
+          and nullif(e.properties ->> 'page_instance_id', '') is not null
+        order by e.session_id, e.properties ->> 'page_instance_id', e.client_timestamp desc
+      ), v2_summaries as (
+        select session_id, sum(visible_seconds) as visible_seconds, max(max_scroll) as max_scroll
+        from v2_page_summaries
+        group by session_id
+      ), v2_fallback as (
+        select distinct on (e.session_id)
+          e.session_id,
+          coalesce(nullif(e.properties ->> 'visible_seconds', '')::numeric, 0) as visible_seconds,
+          coalesce(nullif(e.properties ->> 'max_scroll_depth', '')::numeric, 0) as max_scroll
+        from base_events e
+        join cohort c on c.session_id = e.session_id and c.session_storage_version >= 2
+        where e.event_name = 'session_summary'
+          and not exists (select 1 from v2_summaries s where s.session_id = e.session_id)
+        order by e.session_id, e.client_timestamp desc
+      ), summaries as (
+        select * from legacy_summaries
+        union all
+        select * from v2_summaries
+        union all
+        select * from v2_fallback
+      ), rollup as (
+        select
+          session_id,
+          bool_or(event_name = 'cta_impression') as cta_impression,
+          bool_or(event_name = 'buy_button_click') as clicked,
+          bool_or(event_name = 'add_to_cart') as cart,
+          bool_or(event_name = 'checkout_started') as checkout,
+          bool_or(event_name = 'purchase') as purchase
+        from base_events
+        group by session_id
+      )
+      select
+        c.campaign,
+        c.content,
+        count(distinct c.visitor_id) as visitors,
+        count(*) as sessions,
+        count(distinct c.fbclid) filter (where c.fbclid is not null) as paid_click_ids,
+        count(*) filter (where s.session_id is not null) as summary_sessions,
+        coalesce(avg(s.visible_seconds) filter (where s.session_id is not null), 0) as avg_visible_seconds,
+        coalesce(avg(s.max_scroll) filter (where s.session_id is not null), 0) as avg_scroll,
+        count(distinct c.visitor_id) filter (where coalesce(r.cta_impression, false)) as cta_impression_visitors,
+        count(distinct c.visitor_id) filter (where coalesce(r.clicked, false)) as click_visitors,
+        count(distinct c.visitor_id) filter (where coalesce(r.cart, false)) as cart_visitors,
+        count(distinct c.visitor_id) filter (where coalesce(r.checkout, false)) as checkout_visitors,
+        count(distinct c.visitor_id) filter (where coalesce(r.purchase, false)) as purchase_visitors
+      from cohort c
+      left join summaries s on s.session_id = c.session_id
+      left join rollup r on r.session_id = c.session_id
+      group by c.campaign, c.content
+      order by purchase_visitors desc, checkout_visitors desc, click_visitors desc, visitors desc
+      limit 30
+    `,
+    sql`
+      with base_events as (
+        select *
+        from public.analytics_events
+        where received_at >= now() - (${days} * interval '1 day')
+          and coalesce(properties ->> 'test', 'false') <> 'true'
+          and coalesce(properties ->> 'internal_traffic', 'false') <> 'true'
+      ), entries as (
+        select distinct on (session_id)
+          session_id,
+          visitor_id,
+          client_timestamp as started_at,
+          device_type,
+          coalesce(nullif(utm_source, ''), nullif(properties #>> '{first_touch,utm_source}', '')) as source,
+          coalesce(nullif(utm_medium, ''), nullif(properties #>> '{first_touch,utm_medium}', '')) as medium,
+          coalesce(nullif(utm_campaign, ''), nullif(properties #>> '{first_touch,utm_campaign}', '')) as campaign,
+          coalesce(nullif(utm_content, ''), nullif(properties #>> '{first_touch,utm_content}', '')) as content,
+          coalesce(nullif(fbclid, ''), nullif(properties #>> '{first_touch,fbclid}', '')) as fbclid,
+          coalesce(nullif(properties ->> 'session_storage_version', '')::integer, 1) as session_storage_version,
+          properties ->> 'session_started_at' as session_started_at
+        from base_events
+        where event_name = 'page_view'
+        order by session_id, client_timestamp asc
+      ), rollup as (
+        select
+          session_id,
+          count(*) as event_count,
+          bool_or(event_name = 'cta_impression') as cta_impression,
+          bool_or(event_name = 'buy_button_click') as clicked,
+          bool_or(event_name = 'checkout_started') as checkout,
+          bool_or(event_name = 'purchase') as purchase
+        from base_events
+        group by session_id
+      )
+      select
+        e.*,
+        coalesce(r.event_count, 0) as event_count,
+        coalesce(r.cta_impression, false) as cta_impression,
+        coalesce(r.clicked, false) as clicked,
+        coalesce(r.checkout, false) as checkout,
+        coalesce(r.purchase, false) as purchase
+      from entries e
+      left join rollup r on r.session_id = e.session_id
+      where (${campaign} = '' or coalesce(e.campaign, '') = ${campaign})
+        and (${content} = '' or coalesce(e.content, '') = ${content})
+      order by e.started_at desc
+      limit 20
+    `,
+    sql`
+      select distinct
+        coalesce(nullif(utm_campaign, ''), nullif(properties #>> '{first_touch,utm_campaign}', '')) as utm_campaign,
+        coalesce(nullif(utm_content, ''), nullif(properties #>> '{first_touch,utm_content}', '')) as utm_content
+      from public.analytics_events
+      where received_at >= now() - interval '90 days'
+        and event_name = 'page_view'
+        and coalesce(properties ->> 'test', 'false') <> 'true'
+        and coalesce(properties ->> 'internal_traffic', 'false') <> 'true'
+      order by 1 nulls last, 2 nulls last
+      limit 250
+    `,
+  ]);
 
   const summary = ((summaryResult as Row[])[0] ?? {}) as Row;
-  const concentration = ((concentrationResult as Row[])[0] ?? {}) as Row;
-
   const visitors = num(summary.visitors);
   const sessions = num(summary.sessions);
   const summarySessions = num(summary.summary_sessions);
+  const summaryPageInstances = num(summary.summary_page_instances);
   const sessionV2Sessions = num(summary.session_v2_sessions);
   const attributedSessions = num(summary.attributed_sessions);
   const attributedVisitors = num(summary.attributed_visitors);
   const unattributedSessions = num(summary.unattributed_sessions);
   const unattributedVisitors = num(summary.unattributed_visitors);
+  const mixedAttributionVisitors = num(summary.mixed_attribution_visitors);
   const paidClickIds = num(summary.paid_click_ids);
   const facebookSessionsWithoutFbclid = num(summary.facebook_sessions_without_fbclid);
   const ctaImpressionVisitors = num(summary.cta_impression_visitors);
@@ -418,9 +485,9 @@ export default async function AiExportPage({
   const sessionV2Coverage = ratio(sessionV2Sessions, sessions);
   const attributionCoverage = ratio(attributedVisitors, visitors);
   const sessionsPerVisitor = visitors > 0 ? sessions / visitors : 0;
-  const maxSessionsPerVisitor = num(concentration.max_sessions_per_visitor);
-  const visitorsWithMultipleSessions = num(concentration.visitors_with_multiple_sessions);
-  const topVisitorShare = num(concentration.top_visitor_session_share_percent);
+  const maxSessionsPerVisitor = num(summary.max_sessions_per_visitor);
+  const visitorsWithMultipleSessions = num(summary.visitors_with_multiple_sessions);
+  const topVisitorShare = num(summary.top_visitor_session_share_percent);
 
   const attributedCtaClickRate = rate(
     attributedClickVisitors,
@@ -452,11 +519,12 @@ export default async function AiExportPage({
       fullyAttributed &&
       creativeVisitors >= MIN_CREATIVE_VISITORS &&
       creativeSummaryCoverage >= MIN_SUMMARY_COVERAGE;
+    const hasDirectionalSample = creativeVisitors >= MIN_DIRECTIONAL_VISITORS;
     const clickRate = rate(
       creativeClickVisitors,
       creativeCtaVisitors > 0 ? creativeCtaVisitors : creativeVisitors,
     );
-    const directionalQualityScore = score(
+    const calculatedDirectionalScore = score(
       rate(creativePurchaseVisitors, creativeVisitors) * 8 +
         rate(creativeCheckoutVisitors, creativeVisitors) * 2.5 +
         clickRate * 1.2 +
@@ -489,8 +557,8 @@ export default async function AiExportPage({
       cta_click_rate_percent: clickRate,
       visitor_checkout_rate_percent: rate(creativeCheckoutVisitors, creativeVisitors),
       visitor_purchase_rate_percent: rate(creativePurchaseVisitors, creativeVisitors),
-      directional_quality_score: directionalQualityScore,
-      quality_score: eligibleForRanking ? directionalQualityScore : null,
+      directional_quality_score: hasDirectionalSample ? calculatedDirectionalScore : null,
+      quality_score: eligibleForRanking ? calculatedDirectionalScore : null,
       eligible_for_creative_ranking: eligibleForRanking,
       confidence: confidenceFromSample(
         creativeVisitors,
@@ -506,33 +574,35 @@ export default async function AiExportPage({
     sessionV2Coverage >= MIN_SESSION_V2_COVERAGE;
   const offerSampleValid = attributedVisitors >= MIN_DIAGNOSTIC_VISITORS;
   const checkoutSampleValid = attributedCheckoutVisitors >= MIN_CHECKOUT_VISITORS;
+  const directionalSampleValid =
+    attributedVisitors >= MIN_DIRECTIONAL_VISITORS && attributedSummarySessions > 0;
 
-  const trafficDirectional = score(
+  const rawTrafficDirectional = score(
     70 - attributedQuickExitRate * 1.2 + Math.min(attributedAvgVisible, 60) * 0.5,
   );
-  const landingDirectional = score(
+  const rawLandingDirectional = score(
     attributedAvgScroll * 0.5 +
       Math.min(attributedAvgVisible, 90) * 0.35 +
       attributedVisitorClickRate * 1.2,
   );
-  const offerDirectional = score(
+  const rawOfferDirectional = score(
     (attributedCtaImpressionVisitors > 0
       ? attributedCtaClickRate
       : attributedVisitorClickRate) * 5 +
       attributedVisitorCheckoutRate * 4,
   );
-  const checkoutDirectional =
+  const rawCheckoutDirectional =
     attributedCheckoutVisitors > 0 ? score(attributedCheckoutPurchaseRate * 1.2) : 0;
 
   const scoredAreas: ScoredArea[] = [
     {
       key: "traffic",
       label: "Aquisição / tráfego",
-      score: behaviorSampleValid ? trafficDirectional : null,
-      directionalScore: trafficDirectional,
+      score: behaviorSampleValid ? rawTrafficDirectional : null,
+      directionalScore: directionalSampleValid ? rawTrafficDirectional : null,
       status: behaviorSampleValid
         ? "measured"
-        : attributedVisitors > 0 && attributedSummarySessions > 0
+        : directionalSampleValid
           ? "directional"
           : "insufficient_data",
       minimumSample: `${MIN_DIAGNOSTIC_VISITORS} visitantes atribuídos, 80% de resumos e sessões v2`,
@@ -540,11 +610,11 @@ export default async function AiExportPage({
     {
       key: "landing",
       label: "Landing page",
-      score: behaviorSampleValid ? landingDirectional : null,
-      directionalScore: landingDirectional,
+      score: behaviorSampleValid ? rawLandingDirectional : null,
+      directionalScore: directionalSampleValid ? rawLandingDirectional : null,
       status: behaviorSampleValid
         ? "measured"
-        : attributedVisitors > 0 && attributedSummarySessions > 0
+        : directionalSampleValid
           ? "directional"
           : "insufficient_data",
       minimumSample: `${MIN_DIAGNOSTIC_VISITORS} visitantes atribuídos, 80% de resumos e sessões v2`,
@@ -552,11 +622,12 @@ export default async function AiExportPage({
     {
       key: "offer",
       label: "Oferta e CTA",
-      score: offerSampleValid ? offerDirectional : null,
-      directionalScore: offerDirectional,
+      score: offerSampleValid ? rawOfferDirectional : null,
+      directionalScore:
+        attributedVisitors >= MIN_DIRECTIONAL_VISITORS ? rawOfferDirectional : null,
       status: offerSampleValid
         ? "measured"
-        : attributedVisitors > 0
+        : attributedVisitors >= MIN_DIRECTIONAL_VISITORS
           ? "directional"
           : "insufficient_data",
       minimumSample: `${MIN_DIAGNOSTIC_VISITORS} visitantes atribuídos`,
@@ -564,11 +635,12 @@ export default async function AiExportPage({
     {
       key: "checkout",
       label: "Checkout",
-      score: checkoutSampleValid ? checkoutDirectional : null,
-      directionalScore: checkoutDirectional,
+      score: checkoutSampleValid ? rawCheckoutDirectional : null,
+      directionalScore:
+        attributedCheckoutVisitors >= 3 ? rawCheckoutDirectional : null,
       status: checkoutSampleValid
         ? "measured"
-        : attributedCheckoutVisitors > 0
+        : attributedCheckoutVisitors >= 3
           ? "directional"
           : "insufficient_data",
       minimumSample: `${MIN_CHECKOUT_VISITORS} visitantes atribuídos no checkout`,
@@ -619,7 +691,7 @@ export default async function AiExportPage({
   }
   if (attributedVisitors < MIN_DIAGNOSTIC_VISITORS) {
     dataQualityWarnings.push(
-      `Somente ${attributedVisitors} visitantes possuem campanha atribuída; os scores permanecem direcionais.`,
+      `Somente ${peopleLabel(attributedVisitors, "visitante possui", "visitantes possuem")} campanha atribuída; os scores medidos permanecem bloqueados.`,
     );
   }
   if (summaryCoverage < MIN_SUMMARY_COVERAGE) {
@@ -629,12 +701,12 @@ export default async function AiExportPage({
   }
   if (sessionV2Coverage < MIN_SESSION_V2_COVERAGE) {
     dataQualityWarnings.push(
-      `Apenas ${rate(sessionV2Sessions, sessions)}% das sessões usam persistência v2. Aguarde tráfego novo antes de comparar com o histórico fragmentado.`,
+      `Apenas ${rate(sessionV2Sessions, sessions)}% das sessões usam persistência v2. O histórico v1 continua fragmentado e não deve ser comparado diretamente ao tráfego novo.`,
     );
   }
   if (visitors > 0 && sessionsPerVisitor >= 1.8) {
     dataQualityWarnings.push(
-      `${sessions} sessões para ${visitors} visitantes (${sessionsPerVisitor.toFixed(2)} por visitante) ainda indicam recorrência alta ou fragmentação histórica.`,
+      `${sessions} sessões para ${visitors} visitantes (${sessionsPerVisitor.toFixed(2)} por visitante) indicam recorrência alta ou fragmentação histórica.`,
     );
   }
   if (topVisitorShare >= 35) {
@@ -644,12 +716,17 @@ export default async function AiExportPage({
   }
   if (visitorsWithMultipleSessions > 0) {
     dataQualityWarnings.push(
-      `${visitorsWithMultipleSessions} visitantes possuem mais de uma sessão; o máximo observado é ${maxSessionsPerVisitor}.`,
+      `${peopleLabel(visitorsWithMultipleSessions, "visitante possui", "visitantes possuem")} mais de uma sessão; o máximo observado é ${maxSessionsPerVisitor}.`,
     );
   }
   if (visitors > 0 && attributionCoverage < 0.8) {
     dataQualityWarnings.push(
-      `${unattributedVisitors} de ${visitors} visitantes estão sem campanha atribuída.`,
+      `${unattributedVisitors} de ${visitors} visitantes não possuem nenhuma sessão atribuída a campanha.`,
+    );
+  }
+  if (mixedAttributionVisitors > 0) {
+    dataQualityWarnings.push(
+      `${peopleLabel(mixedAttributionVisitors, "visitante aparece", "visitantes aparecem")} em sessões atribuídas e diretas. Os grupos de visitantes são mutuamente exclusivos, mas as sessões continuam separadas por origem.`,
     );
   }
   if (facebookSessionsWithoutFbclid > 0) {
@@ -680,7 +757,7 @@ export default async function AiExportPage({
     tests.push({
       priority: tests.length + 1,
       area: "Integridade de sessão",
-      test: "Acumular tráfego com sessão v2 e comparar visitantes, sessões e concentração",
+      test: "Acumular tráfego externo com sessão v2 e comparar visitantes, sessões e concentração",
       hypothesis:
         "A leitura histórica ainda mistura sessões antigas fragmentadas com o novo modelo persistente de 30 minutos.",
       impact: "Muito alto",
@@ -702,7 +779,7 @@ export default async function AiExportPage({
         "Atingir 90% de visitantes atribuídos e registrar fbclid quando ele existir na URL de entrada.",
     });
   }
-  if (attributedVisitors >= 5 && attributedVisitorClickRate < 10) {
+  if (attributedVisitors >= MIN_DIRECTIONAL_VISITORS && attributedVisitorClickRate < 10) {
     tests.push({
       priority: tests.length + 1,
       area: "Oferta e CTA",
@@ -727,7 +804,8 @@ export default async function AiExportPage({
         "Com volume mínimo por visitante, a perda após checkout pode indicar fricção comercial ou técnica.",
       impact: "Muito alto",
       difficulty: "Média",
-      success_metric: "Aumentar visitantes com compra ÷ visitantes no checkout para pelo menos 30%.",
+      success_metric:
+        "Aumentar visitantes com compra ÷ visitantes no checkout para pelo menos 30%.",
     });
   }
   if (tests.length === 0) {
@@ -743,7 +821,7 @@ export default async function AiExportPage({
   }
 
   const directionalBottleneck =
-    attributedVisitors >= 5 && attributedClickVisitors === 0
+    attributedVisitors >= MIN_DIRECTIONAL_VISITORS && attributedClickVisitors === 0
       ? "Página para CTA no tráfego atribuído"
       : biggestBottleneck?.label ?? null;
 
@@ -751,7 +829,7 @@ export default async function AiExportPage({
     visitors === 0
       ? "Nenhum visitante válido foi encontrado neste recorte."
       : sessionV2Coverage < MIN_SESSION_V2_COVERAGE
-        ? "O tracker de sessão foi corrigido, mas o recorte ainda contém histórico fragmentado. Priorize tráfego novo com sessão v2 antes de julgar a página."
+        ? "O tracker de sessão foi corrigido, mas o recorte ainda contém histórico v1 fragmentado. A validação só começa quando a landing externa carregar o tracker v2."
         : topVisitorShare >= 35
           ? "A amostra está concentrada em poucos visitantes. Use visitantes únicos, não sessões, como unidade principal de decisão."
           : attributedVisitors < MIN_DIAGNOSTIC_VISITORS
@@ -764,23 +842,29 @@ export default async function AiExportPage({
                   ? "A landing sustenta atenção ou progressão abaixo dos demais estágios medidos."
                   : "Os dados medidos apontam primeiro para aquisição ou congruência anúncio-página.";
 
-  const benchmarkPurchaseRate = Math.max(
-    rate(attributedPurchaseVisitors, attributedVisitors),
-    2,
-  );
-  const potentialPurchasesAtBenchmark = Number(
-    ((attributedVisitors * benchmarkPurchaseRate) / 100).toFixed(2),
-  );
-  const estimatedMissingPurchases = Number(
-    Math.max(0, potentialPurchasesAtBenchmark - attributedPurchaseVisitors).toFixed(2),
-  );
+  const opportunitySampleValid = attributedVisitors >= MIN_DIAGNOSTIC_VISITORS;
+  const benchmarkPurchaseRate = opportunitySampleValid
+    ? Math.max(rate(attributedPurchaseVisitors, attributedVisitors), 2)
+    : null;
+  const potentialPurchasesAtBenchmark =
+    benchmarkPurchaseRate === null
+      ? null
+      : Number(((attributedVisitors * benchmarkPurchaseRate) / 100).toFixed(2));
+  const estimatedMissingPurchases =
+    potentialPurchasesAtBenchmark === null
+      ? null
+      : Number(
+          Math.max(0, potentialPurchasesAtBenchmark - attributedPurchaseVisitors).toFixed(2),
+        );
   const estimatedRevenueGap =
-    aov === null ? null : Number((estimatedMissingPurchases * aov).toFixed(2));
+    aov === null || estimatedMissingPurchases === null
+      ? null
+      : Number((estimatedMissingPurchases * aov).toFixed(2));
   const estimatedPaidTrafficCost =
     cpc === null || paidClickIds === 0 ? null : Number((paidClickIds * cpc).toFixed(2));
 
   const exportData = {
-    schema: "conversion_tracker_campaign_dna_v4",
+    schema: "conversion_tracker_campaign_dna_v4_1",
     generated_at: new Date().toISOString(),
     analysis_request:
       "Valide o diagnóstico usando visitantes únicos, conteste conclusões frágeis, identifique concentração e recomende testes incrementais. Não trate sessões como pessoas nem correlação como causalidade.",
@@ -792,6 +876,8 @@ export default async function AiExportPage({
     },
     attribution: {
       model: "first_page_view_per_session",
+      visitor_groups: "mutually_exclusive_by_presence_of_any_attributed_session",
+      mixed_attribution_visitors: mixedAttributionVisitors,
       fallback: "properties.first_touch",
       test_and_internal_traffic_excluded: true,
       purchase_requires_same_session: true,
@@ -809,14 +895,20 @@ export default async function AiExportPage({
       max_sessions_per_visitor: maxSessionsPerVisitor,
       visitors_with_multiple_sessions: visitorsWithMultipleSessions,
       top_visitor_session_share_percent: Number(topVisitorShare.toFixed(2)),
+      validation_note:
+        "A própria central é tráfego interno e fica excluída. A cobertura v2 só sobe quando a landing externa usa o tracker v2.",
     },
     data_quality: {
+      summary_aggregation:
+        "legacy_latest_summary; v2_sum_of_latest_summary_per_distinct_page_instance",
       summary_sessions: summarySessions,
+      summary_page_instances: summaryPageInstances,
       summary_coverage_percent: Number((summaryCoverage * 100).toFixed(2)),
       attributed_visitors: attributedVisitors,
       attributed_sessions: attributedSessions,
       unattributed_visitors: unattributedVisitors,
       unattributed_sessions: unattributedSessions,
+      mixed_attribution_visitors: mixedAttributionVisitors,
       visitor_attribution_coverage_percent: Number((attributionCoverage * 100).toFixed(2)),
       paid_click_ids: paidClickIds,
       facebook_sessions_without_fbclid: facebookSessionsWithoutFbclid,
@@ -865,9 +957,9 @@ export default async function AiExportPage({
         visitor_checkout_rate_percent: attributedVisitorCheckoutRate,
         checkout_to_purchase_percent: attributedCheckoutPurchaseRate,
       },
-      unattributed_traffic: {
+      visitors_without_any_campaign_attribution: {
         visitors: unattributedVisitors,
-        sessions: unattributedSessions,
+        sessions_without_campaign: unattributedSessions,
       },
     },
     behavior: {
@@ -886,6 +978,8 @@ export default async function AiExportPage({
       javascript_errors: num(summary.javascript_errors),
     },
     opportunity_estimate: {
+      status: opportunitySampleValid ? "directional" : "insufficient_data",
+      minimum_attributed_visitors: MIN_DIAGNOSTIC_VISITORS,
       benchmark_purchase_rate_percent: benchmarkPurchaseRate,
       attributed_visitors_used: attributedVisitors,
       potential_purchases_at_benchmark: potentialPurchasesAtBenchmark,
@@ -894,7 +988,7 @@ export default async function AiExportPage({
       paid_click_ids_used: paidClickIds,
       estimated_paid_traffic_cost: estimatedPaidTrafficCost,
       caveat:
-        "Custo só é estimado quando há fbclid distinto. Sessões e visitantes não são tratados como cliques pagos.",
+        "Estimativas financeiras ficam nulas abaixo da amostra mínima. Custo exige fbclid distinto; sessões e visitantes não são cliques pagos.",
     },
     prioritized_tests: tests,
     creatives,
@@ -918,9 +1012,13 @@ export default async function AiExportPage({
     })),
     interpretation_notes: [
       "Visitantes únicos são a unidade principal de confiança e conversão.",
-      "Sessões v2 persistem entre abas e expiram após 30 minutos de inatividade.",
+      "Visitantes atribuídos e não atribuídos agora são grupos mutuamente exclusivos.",
+      "Sessões mistas continuam separadas por origem; conversão ainda exige a mesma sessão.",
+      "O histórico v1 usa apenas o resumo mais recente por sessão.",
+      "A v2 soma somente o resumo mais recente de cada page_instance distinto.",
+      "Scores direcionais exigem pelo menos cinco visitantes atribuídos.",
+      "Estimativas financeiras exigem pelo menos trinta visitantes atribuídos.",
       "Tráfego interno é marcado como test e excluído das consultas.",
-      "Score nulo significa amostra insuficiente, não desempenho zero.",
       "Custo não é estimado a partir de sessões; exige fbclid distinto.",
       "Correlação entre rolagem, tempo e conversão não comprova causalidade.",
     ],
@@ -944,58 +1042,99 @@ export default async function AiExportPage({
     <main className="shell dashboardShell">
       <header className="dashboardHeader">
         <div>
-          <p className="eyebrow">ITERAÇÃO 10</p>
+          <p className="eyebrow">ITERAÇÃO 10.1</p>
           <h1 className="dashboardTitle">DNA da campanha</h1>
           <p className="subtitle dashboardSubtitle">
-            Diagnóstico por visitantes únicos, sessões persistentes e concentração real da amostra.
+            Visitantes únicos, atribuição mutuamente exclusiva e comportamento agregado sem duplicar resumos históricos.
           </p>
         </div>
         <Link className="secondaryLink" href="/">Voltar à central</Link>
       </header>
 
       <form className="filterBar" method="get">
-        <label><span>Período</span><select name="days" defaultValue={String(days)}><option value="1">24 horas</option><option value="7">7 dias</option><option value="14">14 dias</option><option value="30">30 dias</option><option value="90">90 dias</option></select></label>
-        <label><span>Campanha</span><select name="campaign" defaultValue={campaign}><option value="">Todas</option>{campaigns.map((item) => <option key={item}>{item}</option>)}</select></label>
-        <label><span>Criativo</span><select name="content" defaultValue={content}><option value="">Todos</option>{contents.map((item) => <option key={item}>{item}</option>)}</select></label>
-        <label><span>Ticket médio (R$)</span><input name="aov" inputMode="decimal" defaultValue={aov ?? ""} placeholder="169" /></label>
-        <label><span>CPC médio (R$)</span><input name="cpc" inputMode="decimal" defaultValue={cpc ?? ""} placeholder="1,70" /></label>
+        <label>
+          <span>Período</span>
+          <select name="days" defaultValue={String(days)}>
+            <option value="1">24 horas</option>
+            <option value="7">7 dias</option>
+            <option value="14">14 dias</option>
+            <option value="30">30 dias</option>
+            <option value="90">90 dias</option>
+          </select>
+        </label>
+        <label>
+          <span>Campanha</span>
+          <select name="campaign" defaultValue={campaign}>
+            <option value="">Todas</option>
+            {campaigns.map((item) => <option key={item}>{item}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>Criativo</span>
+          <select name="content" defaultValue={content}>
+            <option value="">Todos</option>
+            {contents.map((item) => <option key={item}>{item}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>Ticket médio (R$)</span>
+          <input name="aov" inputMode="decimal" defaultValue={aov ?? ""} placeholder="169" />
+        </label>
+        <label>
+          <span>CPC médio (R$)</span>
+          <input name="cpc" inputMode="decimal" defaultValue={cpc ?? ""} placeholder="1,70" />
+        </label>
         <button className="filterButton" type="submit">Gerar diagnóstico</button>
       </form>
 
-      <section className="metricGrid" aria-label="DNA da campanha">
-        <article className="metricCard"><span>Saúde geral</span><strong>{healthScore === null ? "N/D" : `${healthScore}/100`}</strong><small>{healthLabel(healthScore)}</small></article>
-        <article className="metricCard"><span>Visitantes atribuídos</span><strong>{attributedVisitors}</strong><small>{attributedSessions} sessões</small></article>
-        <article className="metricCard"><span>Sessões v2</span><strong>{rate(sessionV2Sessions, sessions)}%</strong><small>persistência entre abas</small></article>
-        <article className="metricCard"><span>Maior gargalo</span><strong style={{ fontSize: 20 }}>{biggestBottleneck?.label ?? "Não determinado"}</strong><small>{directionalBottleneck ? `Sinal: ${directionalBottleneck}` : "Sem sinal suficiente"}</small></article>
+      <section className="metricGrid" aria-label="Resumo do diagnóstico">
+        <article className="metricCard">
+          <span>Saúde geral</span>
+          <strong>{healthScore === null ? "N/D" : `${healthScore}/100`}</strong>
+          <small>{healthLabel(healthScore)}</small>
+        </article>
+        <article className="metricCard">
+          <span>Visitantes atribuídos</span>
+          <strong>{attributedVisitors}</strong>
+          <small>{attributionCoverage >= 0 ? `${rate(attributedVisitors, visitors)}% do total` : "Sem dados"}</small>
+        </article>
+        <article className="metricCard">
+          <span>Cobertura sessão v2</span>
+          <strong>{rate(sessionV2Sessions, sessions)}%</strong>
+          <small>{sessionV2Sessions} de {sessions} sessões</small>
+        </article>
+        <article className="metricCard">
+          <span>Maior concentração</span>
+          <strong>{topVisitorShare.toFixed(1)}%</strong>
+          <small>das sessões em um visitante</small>
+        </article>
       </section>
 
       <section className="panel">
         <div className="panelHeader dashboardPanelHeader">
-          <div><p className="eyebrow">INTEGRIDADE DE SESSÃO</p><h2>{sessions} sessões para {visitors} visitantes</h2></div>
-          <span className="hint">Maior visitante: {topVisitorShare.toFixed(1)}% das sessões</span>
-        </div>
-        <div className="funnelList">
-          {dataQualityWarnings.map((warning, index) => (
-            <article className="funnelRow" key={`${index}-${warning}`}>
-              <div className="funnelCopy"><div><strong>{warning}</strong><code>alerta_{index + 1}</code></div></div>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <section className="panel">
-        <div className="panelHeader dashboardPanelHeader">
-          <div><p className="eyebrow">DIAGNÓSTICO</p><h2>{mainDiagnosis}</h2></div>
+          <div>
+            <p className="eyebrow">DIAGNÓSTICO</p>
+            <h2>{mainDiagnosis}</h2>
+          </div>
           <span className="hint">Confiança {confidence}/100</span>
         </div>
         <div className="funnelList">
           {scoredAreas.map((area) => (
             <article className="funnelRow" key={area.key}>
               <div className="funnelCopy">
-                <div><strong>{area.label}</strong><code>{area.key}_quality · {statusLabel(area.status)}</code><small>Mínimo: {area.minimumSample}</small></div>
-                <div className="funnelNumbers"><strong>{area.score === null ? "N/D" : area.score}</strong><span>{area.score === null ? `sinal ${area.directionalScore}` : "/100"}</span></div>
+                <div>
+                  <strong>{area.label}</strong>
+                  <code>{statusLabel(area.status)}</code>
+                  <small>Mínimo: {area.minimumSample}</small>
+                </div>
+                <div className="funnelNumbers">
+                  <strong>{area.score ?? area.directionalScore ?? "N/D"}</strong>
+                  <span>{area.score !== null ? "/100" : area.directionalScore !== null ? "sinal" : "sem amostra"}</span>
+                </div>
               </div>
-              <div className="funnelTrack"><div className="funnelFill" style={{ width: `${area.directionalScore}%` }} /></div>
+              <div className="funnelTrack">
+                <div className="funnelFill" style={{ width: `${area.score ?? area.directionalScore ?? 0}%` }} />
+              </div>
             </article>
           ))}
         </div>
@@ -1003,15 +1142,47 @@ export default async function AiExportPage({
 
       <section className="panel">
         <div className="panelHeader dashboardPanelHeader">
-          <div><p className="eyebrow">PLANO DE AÇÃO</p><h2>Testes incrementais priorizados</h2></div>
-          <span className="hint">Visitantes, não sessões</span>
+          <div>
+            <p className="eyebrow">QUALIDADE DOS DADOS</p>
+            <h2>{summarySessions}/{sessions} sessões com resumo válido</h2>
+          </div>
+          <span className="hint">{mixedAttributionVisitors} visitantes com origem mista</span>
+        </div>
+        <div className="funnelList">
+          {dataQualityWarnings.map((warning, index) => (
+            <article className="funnelRow" key={`${index}-${warning}`}>
+              <div className="funnelCopy">
+                <div>
+                  <strong>{warning}</strong>
+                  <code>alerta_{index + 1}</code>
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panelHeader dashboardPanelHeader">
+          <div>
+            <p className="eyebrow">PLANO DE AÇÃO</p>
+            <h2>Testes incrementais priorizados</h2>
+          </div>
+          <span className="hint">Uma variável por vez</span>
         </div>
         <div className="funnelList">
           {tests.map((test) => (
             <article className="funnelRow" key={`${test.priority}-${test.test}`}>
               <div className="funnelCopy">
-                <div><strong>{test.priority}. {test.test}</strong><code>{test.area}</code><small>{test.hypothesis}</small></div>
-                <div className="funnelNumbers"><strong>{test.impact}</strong><span>{test.difficulty}</span></div>
+                <div>
+                  <strong>{test.priority}. {test.test}</strong>
+                  <code>{test.area}</code>
+                  <small>{test.hypothesis}</small>
+                </div>
+                <div className="funnelNumbers">
+                  <strong>{test.impact}</strong>
+                  <span>{test.difficulty}</span>
+                </div>
               </div>
             </article>
           ))}
@@ -1020,12 +1191,12 @@ export default async function AiExportPage({
 
       <section className="panel">
         <div className="panelHeader dashboardPanelHeader">
-          <div><p className="eyebrow">PACOTE ESTRUTURADO</p><h2>Código pronto para copiar</h2></div>
+          <div>
+            <p className="eyebrow">PACOTE ESTRUTURADO</p>
+            <h2>Código pronto para copiar</h2>
+          </div>
           <CopyButton value={code} />
         </div>
-        <p className="subtitle" style={{ marginBottom: 16 }}>
-          O JSON v4 mede concentração, visitantes únicos, sessões v2, fbclid e tráfego interno.
-        </p>
         <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: 720, overflow: "auto", padding: 20, borderRadius: 16, background: "rgba(0,0,0,.28)", fontSize: 13, lineHeight: 1.55 }}>
           <code>{code}</code>
         </pre>

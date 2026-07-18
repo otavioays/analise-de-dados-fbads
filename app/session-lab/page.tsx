@@ -4,13 +4,12 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 type TrackerApi = {
-  visitorId: string;
-  sessionId: string;
-  getSessionId: () => string;
-  resetSession: () => string;
-  isInternalTraffic: () => boolean;
+  track: (eventName: string, properties?: Record<string, unknown>) => Promise<boolean>;
+  forceNewSession: () => string;
   setInternalTraffic: (enabled: boolean) => boolean;
-  sessionTimeoutMinutes: number;
+  getVisitorId: () => string;
+  getSessionId: () => string;
+  isInternalTraffic: () => boolean;
 };
 
 declare global {
@@ -65,10 +64,10 @@ export default function SessionLabPage() {
 
     setSnapshot({
       ready: true,
-      visitorId: tracker.visitorId,
+      visitorId: tracker.getVisitorId(),
       sessionId: tracker.getSessionId(),
       internalTraffic: tracker.isInternalTraffic(),
-      timeoutMinutes: tracker.sessionTimeoutMinutes,
+      timeoutMinutes: 30,
       sessionStartedAt: dateLabel(stored?.started_at),
       lastActivityAt: dateLabel(stored?.last_activity_at),
     });
@@ -80,8 +79,8 @@ export default function SessionLabPage() {
     return () => window.clearInterval(interval);
   }, [refresh]);
 
-  function resetSession() {
-    window.ConversionTracker?.resetSession();
+  function forceNewSession() {
+    window.ConversionTracker?.forceNewSession();
     refresh();
   }
 
@@ -89,7 +88,7 @@ export default function SessionLabPage() {
     <main className="shell dashboardShell">
       <header className="dashboardHeader">
         <div>
-          <p className="eyebrow">ITERAÇÃO 10 · BANCADA</p>
+          <p className="eyebrow">ITERAÇÃO 10.1 · BANCADA</p>
           <h1 className="dashboardTitle">Integridade da sessão</h1>
           <p className="subtitle dashboardSubtitle">
             Abra esta página em outra aba. O visitante e a sessão devem permanecer iguais durante 30 minutos de atividade.
@@ -139,7 +138,7 @@ export default function SessionLabPage() {
           </article>
           <article className="funnelRow">
             <div className="funnelCopy">
-              <div><strong>Início da sessão</strong><code>{snapshot.sessionStartedAt}</code><small>Só muda ao expirar ou ao resetar manualmente.</small></div>
+              <div><strong>Início da sessão</strong><code>{snapshot.sessionStartedAt}</code><small>Só muda ao expirar ou ao forçar manualmente.</small></div>
             </div>
           </article>
           <article className="funnelRow">
@@ -150,7 +149,7 @@ export default function SessionLabPage() {
         </div>
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 18 }}>
           <button className="filterButton" type="button" onClick={refresh}>Atualizar</button>
-          <button className="secondaryLink" type="button" onClick={resetSession}>Forçar nova sessão</button>
+          <button className="secondaryLink" type="button" onClick={forceNewSession}>Forçar nova sessão</button>
         </div>
       </section>
 

@@ -24,10 +24,10 @@
 
   var visitorStorageKey = storagePrefix + "_visitor_id";
   var sessionStorageKey = storagePrefix + "_session_v2";
-  var legacySessionStorageKey = storagePrefix + "_session_id";
   var firstTouchStorageKey = storagePrefix + "_first_touch";
   var sessionAttributionKey = storagePrefix + "_session_attribution_v2";
   var internalTrafficStorageKey = storagePrefix + "_internal_traffic";
+  var tabStorageKey = storagePrefix + "_tab_id";
 
   function log() {
     if (!debug || !window.console) return;
@@ -67,18 +67,7 @@
   function removeStorage(storage, key) {
     try {
       storage.removeItem(key);
-      return true;
-    } catch (_error) {
-      return false;
-    }
-  }
-
-  function getOrCreateId(storage, key) {
-    var existing = readStorage(storage, key);
-    if (existing) return existing;
-    var created = uuid();
-    writeStorage(storage, key, created);
-    return created;
+    } catch (_error) {}
   }
 
   function parseJson(value) {
@@ -88,6 +77,14 @@
     } catch (_error) {
       return null;
     }
+  }
+
+  function getOrCreateId(storage, key) {
+    var existing = readStorage(storage, key);
+    if (existing) return existing;
+    var created = uuid();
+    writeStorage(storage, key, created);
+    return created;
   }
 
   function compactObject(object) {
@@ -111,113 +108,87 @@
     });
   }
 
-  function hasAttribution(value) {
-    return Boolean(value && typeof value === "object" && Object.keys(value).length);
+  function normalizeSessionState(candidate) {
+    if (!candidate || typeof candidate !== "object") return null;
+    if (typeof candidate.id !== "string") return null;
+    var startedAt = Number(candidate.started_at);
+    var lastActivityAt = Number(candidate.last_activity_at);
+    if (!Number.isFinite(startedAt) || !Number.isFinite(lastActivityAt)) return null;
+    return {
+      id: candidate.id,
+      started_at: startedAt,
+      last_activity_at: lastActivityAt,
+      version: 2
+    };
   }
 
-  function applyInternalTrafficControls() {
-    var params = new URLSearchParams(window.location.search);
-    var queryValue = params.get("ct_internal");
-
-    if (queryValue === "1" || queryValue === "true") {
-      writeStorage(window.localStorage, internalTrafficStorageKey, "true");
-    } else if (queryValue === "0" || queryValue === "false") {
-      removeStorage(window.localStorage, internalTrafficStorageKey);
-    }
-  }
-
-  function isInternalTraffic() {
-    if (script.getAttribute("data-internal") === "true") return true;
-    return readStorage(window.localStorage, internalTrafficStorageKey) === "true";
-  }
-
-  function setInternalTraffic(enabled) {
-    if (enabled) {
-      writeStorage(window.localStorage, internalTrafficStorageKey, "true");
-    } else {
-      removeStorage(window.localStorage, internalTrafficStorageKey);
-    }
-    return isInternalTraffic();
-  }
-
-  function validSessionRecord(record) {
-    return Boolean(
-      record &&
-        typeof record.id === "string" &&
-        typeof record.started_at === "number" &&
-        typeof record.last_activity_at === "number" &&
-        Number.isFinite(record.started_at) &&
-        Number.isFinite(record.last_activity_at)
-    );
-  }
-
-  function sessionExpired(record, now) {
-    if (!validSessionRecord(record)) return true;
-    if (record.last_activity_at > now + 5 * 60 * 1000) return true;
-    return now - record.last_activity_at > sessionTimeoutMs;
-  }
-
-  function clearSessionAttribution() {
-    removeStorage(window.localStorage, sessionAttributionKey);
-  }
-
-  function createSession(now) {
-    var record = {
+  function createSessionState(now) {
+    var state = {
       id: uuid(),
       started_at: now,
       last_activity_at: now,
       version: 2
     };
-    writeStorage(window.localStorage, sessionStorageKey, JSON.stringify(record));
-    removeStorage(window.sessionStorage, legacySessionStorageKey);
-    clearSessionAttribution();
-    return record;
+    writeStorage(window.localStorage, sessionStorageKey, JSON.stringify(state));
+    removeStorage(window.localStorage, sessionAttributionKey);
+    return state;
   }
 
-  function ensureSession() {
+  function resolveSessionState(options) {
+    var settings = options || {};
     var now = Date.now();
-    var stored = parseJson(readStorage(window.localStorage, sessionStorageKey));
-    var isNew = sessionExpired(stored, now);
-    var record = isNew ? createSession(now) : stored;
+    var stored = normalizeSessionState(
+      parseJson(readStorage(window.localStorage, sessionStorageKey))
+    );
+    var expired = !stored || now - stored.last_activity_at > sessionTimeoutMs;
+    var state = settings.forceNew || expired ? createSessionState(now) : stored;
 
-    record.last_activity_at = now;
-    writeStorage(window.localStorage, sessionStorageKey, JSON.stringify(record));
+    if (settings.touch !== false) {
+      state.last_activity_at = now;
+      writeStorage(window.localStorage, sessionStorageKey, JSON.stringify(state));
+    }
 
-    return { record: record, isNew: isNew };
+    return state;
   }
 
-  function resetSession() {
-    removeStorage(window.localStorage, sessionStorageKey);
-    clearSessionAttribution();
-    lastTrackedPageKey = null;
-    return ensureSession().record.id;
+  function internalTrafficFromUrl() {
+    var value = new URLSearchParams(window.location.search).get("ct_internal");
+    if (value === "1" || value === "true") return true;
+    if (value === "0" || value === "false") return false;
+    return null;
   }
 
-  function resolveAttribution(sessionRecord) {
+  function resolveInternalTraffic() {
+    var urlSetting = internalTrafficFromUrl();
+    if (urlSetting !== null) {
+      writeStorage(window.localStorage, internalTrafficStorageKey, urlSetting ? "true" : "false");
+      return urlSetting;
+    }
+    if (script.getAttribute("data-internal") === "true") return true;
+    return readStorage(window.localStorage, internalTrafficStorageKey) === "true";
+  }
+
+  function resolveAttribution(sessionState) {
     var current = readUrlAttribution();
     var firstTouch = parseJson(readStorage(window.localStorage, firstTouchStorageKey));
     var storedSessionTouch = parseJson(
       readStorage(window.localStorage, sessionAttributionKey)
     );
     var sessionTouch =
-      storedSessionTouch && storedSessionTouch.session_id === sessionRecord.id
+      storedSessionTouch && storedSessionTouch.session_id === sessionState.id
         ? storedSessionTouch.attribution
         : null;
 
-    if (hasAttribution(current)) {
+    if (Object.keys(current).length) {
       sessionTouch = current;
       writeStorage(
         window.localStorage,
         sessionAttributionKey,
-        JSON.stringify({
-          session_id: sessionRecord.id,
-          attribution: sessionTouch,
-          captured_at: new Date().toISOString()
-        })
+        JSON.stringify({ session_id: sessionState.id, attribution: sessionTouch })
       );
     }
 
-    if (!firstTouch && hasAttribution(current)) {
+    if (!firstTouch && Object.keys(current).length) {
       firstTouch = Object.assign({}, current, {
         landing_page: window.location.href,
         captured_at: new Date().toISOString()
@@ -225,15 +196,10 @@
       writeStorage(window.localStorage, firstTouchStorageKey, JSON.stringify(firstTouch));
     }
 
-    var active = hasAttribution(sessionTouch)
-      ? sessionTouch
-      : hasAttribution(current)
-        ? current
-        : hasAttribution(firstTouch)
-          ? firstTouch
-          : {};
-
-    return { active: active, firstTouch: firstTouch || {} };
+    return {
+      active: sessionTouch || current || firstTouch || {},
+      firstTouch: firstTouch || {}
+    };
   }
 
   function getDeviceType() {
@@ -243,14 +209,21 @@
     return "desktop";
   }
 
-  applyInternalTrafficControls();
-
   var visitorId = getOrCreateId(window.localStorage, visitorStorageKey);
-  var initialSession = ensureSession().record;
-  var lastTrackedPageKey = null;
+  var tabId = getOrCreateId(window.sessionStorage, tabStorageKey);
+  var pageInstanceId = uuid();
+  var sessionState = resolveSessionState({ touch: true });
+  var internalTraffic = resolveInternalTraffic();
+  var lastTrackedUrl = null;
 
-  function buildPayload(eventName, properties, sessionRecord) {
-    var attribution = resolveAttribution(sessionRecord);
+  function currentSessionState() {
+    sessionState = resolveSessionState({ touch: true });
+    return sessionState;
+  }
+
+  function buildPayload(eventName, properties) {
+    var activeSession = currentSessionState();
+    var attribution = resolveAttribution(activeSession);
     var active = attribution.active;
     var safeProperties =
       properties && typeof properties === "object" && !Array.isArray(properties)
@@ -261,7 +234,7 @@
       event_id: uuid(),
       event_name: eventName,
       visitor_id: visitorId,
-      session_id: sessionRecord.id,
+      session_id: activeSession.id,
       client_timestamp: new Date().toISOString(),
       page_url: window.location.href,
       page_path: window.location.pathname + window.location.search,
@@ -278,11 +251,14 @@
       language: navigator.language || null,
       properties: Object.assign({}, safeProperties, {
         first_touch: attribution.firstTouch,
-        internal_traffic: isInternalTraffic(),
-        session_started_at: new Date(sessionRecord.started_at).toISOString(),
-        session_last_activity_at: new Date(sessionRecord.last_activity_at).toISOString(),
+        session_storage_version: 2,
+        session_started_at: new Date(activeSession.started_at).toISOString(),
+        session_last_activity_at: new Date(activeSession.last_activity_at).toISOString(),
         session_timeout_minutes: sessionTimeoutMinutes,
-        session_storage_version: 2
+        page_instance_id: pageInstanceId,
+        tab_id: tabId,
+        internal_traffic: internalTraffic,
+        test: internalTraffic || safeProperties.test === true
       })
     };
   }
@@ -298,9 +274,7 @@
       body: JSON.stringify(payload)
     })
       .then(function (response) {
-        if (!response.ok) {
-          throw new Error("Tracking request failed with status " + response.status);
-        }
+        if (!response.ok) throw new Error("Tracking request failed with status " + response.status);
         return true;
       })
       .catch(function (error) {
@@ -311,30 +285,16 @@
 
   function track(eventName, properties) {
     if (typeof eventName !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(eventName)) {
+      log("ignored invalid event name", eventName);
       return Promise.resolve(false);
     }
-
-    var sessionState = ensureSession();
-    var record = sessionState.record;
-
-    if (sessionState.isNew && eventName !== "page_view") {
-      lastTrackedPageKey = null;
-      return send(
-        buildPayload("page_view", { session_restarted_after_inactivity: true }, record)
-      ).then(function () {
-        lastTrackedPageKey = record.id + "|" + window.location.href;
-        return send(buildPayload(eventName, properties, ensureSession().record));
-      });
-    }
-
-    return send(buildPayload(eventName, properties, record));
+    return send(buildPayload(eventName, properties));
   }
 
   function trackPageView() {
-    var record = ensureSession().record;
-    var pageKey = record.id + "|" + window.location.href;
-    if (pageKey === lastTrackedPageKey) return;
-    lastTrackedPageKey = pageKey;
+    var currentUrl = window.location.href;
+    if (currentUrl === lastTrackedUrl) return;
+    lastTrackedUrl = currentUrl;
     track("page_view");
   }
 
@@ -422,9 +382,7 @@
           entries.forEach(function (entry) {
             var element = entry.target;
             var key = element.getAttribute("data-chapter") || element.id || "unknown";
-            if (!entry.isIntersecting || entry.intersectionRatio < 0.45 || seenSections[key]) {
-              return;
-            }
+            if (!entry.isIntersecting || entry.intersectionRatio < 0.45 || seenSections[key]) return;
             seenSections[key] = true;
             track("section_view", {
               section_id: element.id || null,
@@ -522,27 +480,46 @@
     updateScroll();
   }
 
-  var api = {
-    track: track,
-    endpoint: endpoint,
-    visitorId: visitorId,
-    getSessionId: function () {
-      return ensureSession().record.id;
-    },
-    resetSession: resetSession,
-    isInternalTraffic: isInternalTraffic,
-    setInternalTraffic: setInternalTraffic,
-    sessionTimeoutMinutes: sessionTimeoutMinutes
-  };
+  function forceNewSession() {
+    sessionState = resolveSessionState({ forceNew: true, touch: true });
+    log("new session", sessionState.id);
+    return sessionState.id;
+  }
 
-  Object.defineProperty(api, "sessionId", {
-    enumerable: true,
-    get: function () {
-      return ensureSession().record.id;
+  function setInternalTraffic(value) {
+    internalTraffic = Boolean(value);
+    writeStorage(window.localStorage, internalTrafficStorageKey, internalTraffic ? "true" : "false");
+    return internalTraffic;
+  }
+
+  window.addEventListener("storage", function (event) {
+    if (event.key === sessionStorageKey && event.newValue) {
+      var incoming = normalizeSessionState(parseJson(event.newValue));
+      if (incoming) sessionState = incoming;
+    }
+    if (event.key === internalTrafficStorageKey) {
+      internalTraffic = event.newValue === "true";
     }
   });
 
-  window.ConversionTracker = Object.freeze(api);
+  window.ConversionTracker = Object.freeze({
+    track: track,
+    forceNewSession: forceNewSession,
+    setInternalTraffic: setInternalTraffic,
+    getVisitorId: function () {
+      return visitorId;
+    },
+    getSessionId: function () {
+      return currentSessionState().id;
+    },
+    getPageInstanceId: function () {
+      return pageInstanceId;
+    },
+    isInternalTraffic: function () {
+      return internalTraffic;
+    },
+    endpoint: endpoint
+  });
 
   installSpaNavigationTracking();
   if (autoBehavior) installBehaviorTracking();
@@ -557,9 +534,9 @@
 
   log("ready", {
     visitor_id: visitorId,
-    session_id: initialSession.id,
-    session_timeout_minutes: sessionTimeoutMinutes,
-    internal_traffic: isInternalTraffic(),
+    session_id: sessionState.id,
+    page_instance_id: pageInstanceId,
+    internal_traffic: internalTraffic,
     endpoint: endpoint
   });
 })();

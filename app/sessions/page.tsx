@@ -18,8 +18,14 @@ type SessionRow = {
   started_at?: string;
   last_event_at?: string;
   device_type?: string | null;
+  utm_source?: string | null;
+  utm_medium?: string | null;
   utm_campaign?: string | null;
   utm_content?: string | null;
+  last_utm_source?: string | null;
+  last_utm_medium?: string | null;
+  last_utm_campaign?: string | null;
+  last_utm_content?: string | null;
   events?: string | number;
   max_scroll?: string | number;
   visible_seconds?: string | number;
@@ -93,6 +99,21 @@ function stageLabel(row: SessionRow): string {
   return "Baixa intenção";
 }
 
+function sourceLabel(row: SessionRow): string {
+  if (!row.utm_source && !row.utm_medium) return "Direto";
+  return [row.utm_source, row.utm_medium].filter(Boolean).join(" / ");
+}
+
+function campaignLabel(row: SessionRow): string {
+  return row.utm_campaign || "Sem campanha";
+}
+
+function creativeLabel(row: SessionRow): string {
+  if (row.utm_content) return row.utm_content;
+  if (!row.utm_source && !row.utm_campaign) return "Visita direta";
+  return "Criativo não informado";
+}
+
 function eventDescription(row: EventRow): string {
   const properties = row.properties ?? {};
 
@@ -141,23 +162,43 @@ export default async function SessionsPage({
   const [sessionsResult, filtersResult, eventsResult] = await Promise.all([
     sql`
       with base_events as (
-        select *
-        from public.analytics_events
-        where received_at >= now() - (${days} * interval '1 day')
-          and coalesce(properties ->> 'test', 'false') <> 'true'
+        select
+          e.*,
+          coalesce(nullif(e.utm_source, ''), nullif(e.properties -> 'first_touch' ->> 'utm_source', '')) as resolved_source,
+          coalesce(nullif(e.utm_medium, ''), nullif(e.properties -> 'first_touch' ->> 'utm_medium', '')) as resolved_medium,
+          coalesce(nullif(e.utm_campaign, ''), nullif(e.properties -> 'first_touch' ->> 'utm_campaign', '')) as resolved_campaign,
+          coalesce(nullif(e.utm_content, ''), nullif(e.properties -> 'first_touch' ->> 'utm_content', '')) as resolved_content
+        from public.analytics_events e
+        where e.received_at >= now() - (${days} * interval '1 day')
+          and coalesce(e.properties ->> 'test', 'false') <> 'true'
       ), entries as (
         select distinct on (session_id)
           session_id,
           visitor_id,
           client_timestamp as started_at,
           device_type,
-          utm_campaign,
-          utm_content
+          resolved_source as utm_source,
+          resolved_medium as utm_medium,
+          resolved_campaign as utm_campaign,
+          resolved_content as utm_content
         from base_events
         where event_name = 'page_view'
-          and (${campaign} = '' or coalesce(utm_campaign, '') = ${campaign})
-          and (${content} = '' or coalesce(utm_content, '') = ${content})
+          and (${campaign} = '' or coalesce(resolved_campaign, '') = ${campaign})
+          and (${content} = '' or coalesce(resolved_content, '') = ${content})
         order by session_id, client_timestamp asc
+      ), last_touches as (
+        select distinct on (session_id)
+          session_id,
+          resolved_source as last_utm_source,
+          resolved_medium as last_utm_medium,
+          resolved_campaign as last_utm_campaign,
+          resolved_content as last_utm_content
+        from base_events
+        where resolved_source is not null
+           or resolved_medium is not null
+           or resolved_campaign is not null
+           or resolved_content is not null
+        order by session_id, client_timestamp desc
       ), summaries as (
         select distinct on (session_id)
           session_id,
@@ -173,8 +214,14 @@ export default async function SessionsPage({
         entries.started_at,
         max(e.client_timestamp) as last_event_at,
         entries.device_type,
+        entries.utm_source,
+        entries.utm_medium,
         entries.utm_campaign,
         entries.utm_content,
+        last_touches.last_utm_source,
+        last_touches.last_utm_medium,
+        last_touches.last_utm_campaign,
+        last_touches.last_utm_content,
         count(e.event_id) as events,
         coalesce(summaries.max_scroll, max(nullif(e.properties ->> 'depth', '')::numeric) filter (where e.event_name = 'scroll_depth'), 0) as max_scroll,
         coalesce(summaries.visible_seconds, max(nullif(e.properties ->> 'seconds', '')::numeric) filter (where e.event_name = 'engagement_time'), 0) as visible_seconds,
@@ -185,18 +232,27 @@ export default async function SessionsPage({
       from entries
       left join base_events e on e.session_id = entries.session_id
       left join summaries on summaries.session_id = entries.session_id
+      left join last_touches on last_touches.session_id = entries.session_id
       group by entries.session_id, entries.visitor_id, entries.started_at, entries.device_type,
-        entries.utm_campaign, entries.utm_content, summaries.max_scroll, summaries.visible_seconds
+        entries.utm_source, entries.utm_medium, entries.utm_campaign, entries.utm_content,
+        last_touches.last_utm_source, last_touches.last_utm_medium,
+        last_touches.last_utm_campaign, last_touches.last_utm_content,
+        summaries.max_scroll, summaries.visible_seconds
       order by entries.started_at desc
       limit 50
     `,
     sql`
-      select distinct utm_campaign, utm_content
+      select distinct
+        coalesce(nullif(utm_campaign, ''), nullif(properties -> 'first_touch' ->> 'utm_campaign', '')) as utm_campaign,
+        coalesce(nullif(utm_content, ''), nullif(properties -> 'first_touch' ->> 'utm_content', '')) as utm_content
       from public.analytics_events
       where received_at >= now() - interval '90 days'
         and event_name = 'page_view'
         and coalesce(properties ->> 'test', 'false') <> 'true'
-        and (utm_campaign is not null or utm_content is not null)
+        and (
+          coalesce(nullif(utm_campaign, ''), nullif(properties -> 'first_touch' ->> 'utm_campaign', '')) is not null
+          or coalesce(nullif(utm_content, ''), nullif(properties -> 'first_touch' ->> 'utm_content', '')) is not null
+        )
       order by utm_campaign nulls last, utm_content nulls last
       limit 250
     `,
@@ -236,10 +292,10 @@ export default async function SessionsPage({
     <main className="shell dashboardShell">
       <header className="dashboardHeader">
         <div>
-          <p className="eyebrow">ITERAÇÃO 4</p>
-          <h1 className="dashboardTitle">Sessões individuais</h1>
+          <p className="eyebrow">ITERAÇÃO 5</p>
+          <h1 className="dashboardTitle">Sessões e atribuição</h1>
           <p className="subtitle dashboardSubtitle">
-            Abra uma jornada real e veja cada passo até o abandono ou a conversão.
+            First touch resiliente, last touch e jornada completa de cada visitante.
           </p>
         </div>
         <Link className="secondaryLink" href="/">
@@ -275,6 +331,14 @@ export default async function SessionsPage({
         <button className="filterButton" type="submit">Aplicar filtros</button>
       </form>
 
+      <section className="panel compact">
+        <p className="eyebrow">MODELO DE ATRIBUIÇÃO</p>
+        <p className="subtitle dashboardSubtitle">
+          A origem principal vem da primeira visualização da sessão. Quando as colunas UTM estão vazias,
+          o sistema recupera automaticamente os dados preservados em <code>first_touch</code>.
+        </p>
+      </section>
+
       <section className="panel">
         <div className="panelHeader dashboardPanelHeader">
           <div><p className="eyebrow">JORNADAS</p><h2>Últimas sessões</h2></div>
@@ -284,7 +348,7 @@ export default async function SessionsPage({
           <table className="dataTable">
             <thead>
               <tr>
-                <th>Início</th><th>Origem</th><th>Dispositivo</th><th>Tempo</th><th>Rolagem</th><th>Estágio</th><th></th>
+                <th>Início</th><th>Atribuição</th><th>Dispositivo</th><th>Tempo</th><th>Rolagem</th><th>Estágio</th><th></th>
               </tr>
             </thead>
             <tbody>
@@ -295,7 +359,11 @@ export default async function SessionsPage({
                 return (
                   <tr key={row.session_id}>
                     <td>{dateLabel(row.started_at)}</td>
-                    <td>{row.utm_campaign || "Direto"}<br /><small>{row.utm_content || "Sem criativo"}</small></td>
+                    <td>
+                      <strong>{sourceLabel(row)}</strong><br />
+                      <span>{campaignLabel(row)}</span><br />
+                      <small>{creativeLabel(row)}</small>
+                    </td>
                     <td>{row.device_type || "—"}</td>
                     <td>{secondsLabel(numberValue(row.visible_seconds))}</td>
                     <td>{Math.round(numberValue(row.max_scroll))}%</td>
@@ -318,6 +386,31 @@ export default async function SessionsPage({
             </div>
             <span className="hint">ID {selectedSession.slice(0, 8)}…</span>
           </div>
+
+          {selected ? (
+            <div className="metricGrid" aria-label="Atribuição da sessão">
+              <article className="metricCard">
+                <span>First touch</span>
+                <strong>{sourceLabel(selected)}</strong>
+                <small>{campaignLabel(selected)} · {creativeLabel(selected)}</small>
+              </article>
+              <article className="metricCard">
+                <span>Last touch</span>
+                <strong>{[selected.last_utm_source, selected.last_utm_medium].filter(Boolean).join(" / ") || "Mesmo first touch"}</strong>
+                <small>{selected.last_utm_campaign || campaignLabel(selected)} · {selected.last_utm_content || creativeLabel(selected)}</small>
+              </article>
+              <article className="metricCard">
+                <span>Eventos</span>
+                <strong>{numberValue(selected.events).toLocaleString("pt-BR")}</strong>
+                <small>Interações registradas</small>
+              </article>
+              <article className="metricCard">
+                <span>Estágio final</span>
+                <strong>{stageLabel(selected)}</strong>
+                <small>{secondsLabel(numberValue(selected.visible_seconds))} ativos</small>
+              </article>
+            </div>
+          ) : null}
 
           {events.length === 0 ? (
             <div className="emptyState">Nenhum evento encontrado para esta sessão.</div>

@@ -1,19 +1,22 @@
 import { NextResponse } from "next/server";
 
-import { getSql } from "@/lib/neon";
+import { getDatabaseConfig, getSql } from "@/lib/neon";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export async function GET() {
-  if (!process.env.DATABASE_URL) {
+  const config = getDatabaseConfig();
+
+  if (!config.isConfigured) {
     return NextResponse.json(
       {
         ok: false,
-        status: "database_url_missing",
+        status: "database_connection_variable_missing",
         environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+        accepted_variables: config.acceptedVariables,
         action:
-          "Enable DATABASE_URL for this Vercel environment and redeploy. Preview deployments need Preview scope.",
+          "Add a Neon connection string to this Vercel environment and redeploy. Preview deployments need Preview scope enabled.",
       },
       { status: 503 },
     );
@@ -27,6 +30,7 @@ export async function GET() {
       ok: true,
       status: "database_ok",
       environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+      variable_name: config.variableName,
     });
   } catch (error) {
     console.error("Database health check failed", error);
@@ -36,6 +40,7 @@ export async function GET() {
         ok: false,
         status: "database_connection_failed",
         environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+        variable_name: config.variableName,
         error_type: error instanceof Error ? error.name : "UnknownError",
         message:
           error instanceof Error

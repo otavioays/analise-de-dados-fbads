@@ -21,13 +21,12 @@ export async function GET() {
 
   try {
     const sql = getSql();
-    const result = await sql`select 1 as database_ok`;
+    await sql`select 1`;
 
     return NextResponse.json({
       ok: true,
       status: "database_ok",
       environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
-      query_result: Number(result[0]?.database_ok ?? 0),
     });
   } catch (error) {
     console.error("Database health check failed", error);

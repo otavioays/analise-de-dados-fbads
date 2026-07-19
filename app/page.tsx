@@ -1,4 +1,4 @@
-import CopyEverythingButton from "./CopyEverythingButton";
+import PrivateConversionTool from "./PrivateConversionTool";
 
 export default function Home() {
   return (
@@ -11,7 +11,7 @@ export default function Home() {
         padding: 24,
       }}
     >
-      <CopyEverythingButton />
+      <PrivateConversionTool />
     </main>
   );
 }

@@ -68,23 +68,30 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     returning event_id
   `;
 
-  const remainingLegacyResult = await sql`
-    select count(*)::integer as count
-    from public.analytics_events e
-    where
-      e.client_timestamp < ${CURRENT_SITE_CUTOVER}::timestamptz
-      or coalesce(e.page_title, '') ilike 'GAIETY Classic%'
-      or coalesce(e.page_url, '') ilike '%/products/relogio-masculino-gaiety-classic%'
-      or coalesce(e.referrer, '') ilike '%/products/relogio-masculino-gaiety-classic%'
-      or coalesce(e.properties ->> 'product_id', '') = 'gaiety-classic'
-      or coalesce(e.properties ->> 'product_name', '') ilike '%GAIETY Classic%'
-      or e.properties @> '{"line_items":[{"product_id":"15913500705137"}]}'::jsonb
-  `;
+  const [remainingLegacyResult, archivedTotalResult] = await Promise.all([
+    sql`
+      select count(*)::integer as count
+      from public.analytics_events e
+      where
+        e.client_timestamp < ${CURRENT_SITE_CUTOVER}::timestamptz
+        or coalesce(e.page_title, '') ilike 'GAIETY Classic%'
+        or coalesce(e.page_url, '') ilike '%/products/relogio-masculino-gaiety-classic%'
+        or coalesce(e.referrer, '') ilike '%/products/relogio-masculino-gaiety-classic%'
+        or coalesce(e.properties ->> 'product_id', '') = 'gaiety-classic'
+        or coalesce(e.properties ->> 'product_name', '') ilike '%GAIETY Classic%'
+        or e.properties @> '{"line_items":[{"product_id":"15913500705137"}]}'::jsonb
+    `,
+    sql`
+      select count(*)::integer as count
+      from public.analytics_events_archive_legacy_gaiety
+    `,
+  ]);
 
   const matchingBefore = rows(matchingBeforeResult);
   const archived = rows(archivedResult);
   const deleted = rows(deletedResult);
   const remainingLegacy = rows(remainingLegacyResult);
+  const archivedTotal = rows(archivedTotalResult);
 
   return NextResponse.json(
     {
@@ -93,6 +100,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       cutover: CURRENT_SITE_CUTOVER,
       matching_before: Number(matchingBefore[0]?.count ?? 0),
       archived_now: archived.length,
+      archived_total: Number(archivedTotal[0]?.count ?? 0),
       deleted_now: deleted.length,
       remaining_legacy: Number(remainingLegacy[0]?.count ?? 0),
       archive_table: "public.analytics_events_archive_legacy_gaiety",

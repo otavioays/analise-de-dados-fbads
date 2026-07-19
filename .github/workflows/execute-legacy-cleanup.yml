@@ -3,28 +3,48 @@ name: Execute legacy GAIETY cleanup
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - maintenance-results/legacy-gaiety.json
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   cleanup:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
       - name: Wait for production route and execute cleanup
         shell: bash
         run: |
           set -euo pipefail
           url="https://analise-de-dados-fbads.vercel.app/api/maintenance/cleanup-legacy-gaiety?token=legacy-gaiety-20260719-b8f174e0"
-          for attempt in $(seq 1 24); do
-            if curl --fail --silent --show-error "$url" --output cleanup-result.json; then
+          for attempt in $(seq 1 36); do
+            if curl --fail --silent --show-error "$url" --output cleanup-result.json \
+              && jq -e 'has("archived_total")' cleanup-result.json >/dev/null; then
               cat cleanup-result.json
               exit 0
             fi
             sleep 5
           done
-          echo "Cleanup endpoint did not become available in time." >&2
+          echo "Cleanup endpoint did not return the final receipt in time." >&2
           exit 1
+      - name: Commit cleanup receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p maintenance-results
+          cp cleanup-result.json maintenance-results/legacy-gaiety.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add maintenance-results/legacy-gaiety.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "chore: record legacy GAIETY cleanup result"
+          git push origin HEAD:main
       - uses: actions/upload-artifact@v4
         if: always()
         with:

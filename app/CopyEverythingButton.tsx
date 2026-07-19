@@ -24,7 +24,10 @@ const moneyFormatter = new Intl.NumberFormat("pt-BR", {
 });
 
 function parseDecimal(value: string): number | null {
-  const normalized = value.trim().replace(/\./g, "").replace(",", ".");
+  const raw = value.trim().replace(/\s/g, "");
+  const normalized = raw.includes(",")
+    ? raw.replace(/\./g, "").replace(",", ".")
+    : raw;
   if (!normalized) return null;
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
@@ -137,10 +140,10 @@ export default function CopyEverythingButton() {
       },
       formulas: {
         contribution_margin_before_ads:
-          "average_order_value * contribution_margin_percent",
+          "average_order_value * contribution_margin_percent / 100",
         break_even_cac: "contribution_margin_before_ads",
         target_cac:
-          "average_order_value * (contribution_margin_percent - desired_profit_percent)",
+          "average_order_value * (contribution_margin_percent - desired_profit_percent) / 100",
         target_roas: "average_order_value / target_cac",
       },
       interpretation:

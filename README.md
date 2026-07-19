@@ -1,17 +1,20 @@
 # Conversion Tracker privado
 
-Primeira iteração de um rastreador próprio para diagnosticar o funil da loja. O projeto recebe eventos do navegador, preserva a origem da campanha e grava tudo em uma tabela privada no Neon Postgres.
+Rastreador próprio para diagnosticar o funil da loja. O projeto recebe eventos do navegador, preserva a origem da campanha, grava tudo em uma tabela privada no Neon Postgres e mantém separadas a sessão real da conversão e a sessão comercial atribuída.
 
 ## O que já está pronto
 
 - `public/tracker.js`: script instalável na loja.
 - `POST /api/events`: endpoint com validação, CORS e deduplicação.
 - IDs anônimos de visitante e sessão.
+- Sessão persistente em `localStorage` com timeout de 30 minutos.
 - Captura de URL, referrer, dispositivo, UTMs e `fbclid`.
 - Evento automático de `page_view`.
 - Eventos por atributos `data-track` ou chamada JavaScript.
+- Resolução de checkout e compra entre sessões.
+- Auditoria de atribuição em `/attribution-audit`.
+- Bancada cross-session em `/attribution-lab`.
 - Migration SQL para a tabela `analytics_events`.
-- Página para testar o funil inteiro.
 
 ## 1. Criar a tabela no Neon
 
@@ -47,7 +50,7 @@ npm install
 npm run dev
 ```
 
-Abra `http://localhost:3000`. O `page_view` será disparado automaticamente. Clique nos quatro botões da bancada de testes e consulte:
+Abra `http://localhost:3000`. O `page_view` será disparado automaticamente. Consulte os eventos com:
 
 ```sql
 select *
@@ -102,22 +105,26 @@ O script encontra automaticamente a API no mesmo domínio em que o `tracker.js` 
 </button>
 ```
 
-### Eventos disparados pelo código da loja
+### Início do checkout
+
+Envie um `checkout_id` estável. Ele é a ponte preferencial para resolver compras feitas em outra sessão ou domínio.
 
 ```html
 <script>
   window.ConversionTracker?.track("checkout_started", {
+    checkout_id: "CHECKOUT-123",
     cart_value: 89.90,
     currency: "BRL"
   });
 </script>
 ```
 
-Para uma compra:
+### Compra
 
 ```html
 <script>
   window.ConversionTracker?.track("purchase", {
+    checkout_id: "CHECKOUT-123",
     order_id: "PEDIDO-123",
     value: 89.90,
     currency: "BRL"
@@ -125,13 +132,58 @@ Para uma compra:
 </script>
 ```
 
-Nesta primeira iteração, `purchase` pode ser disparado na página de agradecimento. A confirmação por webhook do pagamento entra em uma iteração posterior.
+Quando Shopify ou outro checkout preservar os IDs originais, também podem ser enviados:
+
+```js
+{
+  ct_visitor_id: "UUID-DO-VISITANTE",
+  ct_session_id: "UUID-DA-SESSAO-DE-ORIGEM"
+}
+```
+
+## Como a atribuição entre sessões funciona
+
+A API nunca substitui `visitor_id` ou `session_id` reais do evento. Para `checkout_started` e `purchase`, ela adiciona `properties.conversion_attribution` com:
+
+```json
+{
+  "version": 1,
+  "visitor_id": "visitante atribuído",
+  "session_id": "sessão atribuída",
+  "method": "checkout_id",
+  "confidence": "high",
+  "cross_session": true,
+  "actual_visitor_id": "visitante real do evento",
+  "actual_session_id": "sessão real do evento"
+}
+```
+
+Ordem de resolução:
+
+1. IDs explícitos preservados no checkout.
+2. Correspondência por `checkout_id`.
+3. Correspondência por `order_id`.
+4. Última sessão atribuída do mesmo visitante em até 30 dias.
+5. A própria sessão do evento.
+
+O método `visitor_latest_attributed_session` é direcional e possui confiança menor que uma correspondência por ID.
+
+## Bancadas de validação
+
+```text
+/session-lab
+/attribution-lab
+/attribution-audit
+```
+
+A central é marcada como tráfego interno. Para executar o laboratório cross-session como dado válido, use `ct_internal=0` ou o botão da própria bancada.
 
 ## Eventos recomendados
 
 ```text
 page_view
 product_view
+cta_impression
 buy_button_click
 add_to_cart
 checkout_started

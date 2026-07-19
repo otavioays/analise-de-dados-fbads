@@ -64,8 +64,51 @@ function loadInitialInputs(): CalculatorInputs {
   }
 }
 
+async function copyTextWithFallback(text: string): Promise<void> {
+  let clipboardError: unknown = null;
+
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch (error) {
+      clipboardError = error;
+    }
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.setAttribute("aria-hidden", "true");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
+
+  try {
+    const copied = document.execCommand("copy");
+    if (!copied) {
+      throw clipboardError instanceof Error
+        ? clipboardError
+        : new Error("O navegador recusou os dois métodos de cópia.");
+    }
+  } finally {
+    textarea.remove();
+  }
+}
+
+function readableError(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message.slice(0, 240);
+  return String(error).slice(0, 240);
+}
+
 export default function CopyEverythingButton() {
   const [copyState, setCopyState] = useState<CopyState>("idle");
+  const [copyError, setCopyError] = useState<string | null>(null);
   const [inputs, setInputs] = useState<CalculatorInputs>(loadInitialInputs);
 
   const calculation = useMemo(() => {
@@ -167,30 +210,41 @@ export default function CopyEverythingButton() {
     if (copyState === "loading") return;
 
     setCopyState("loading");
+    setCopyError(null);
 
     try {
       const response = await fetch("/api/export?days=90&raw_limit=10000", {
         cache: "no-store",
       });
+      const responseText = await response.text();
 
       if (!response.ok) {
-        throw new Error(`Export failed with status ${response.status}`);
+        throw new Error(
+          `Exportação retornou HTTP ${response.status}: ${responseText.slice(0, 180)}`,
+        );
       }
 
-      const payload = (await response.json()) as Record<string, unknown>;
+      let payload: Record<string, unknown>;
+      try {
+        payload = JSON.parse(responseText) as Record<string, unknown>;
+      } catch {
+        throw new Error("A API respondeu, mas o conteúdo não era um JSON válido.");
+      }
+
       payload.business_economics = {
         source: "private_target_cac_calculator",
         calculated_at: new Date().toISOString(),
         ...calculation,
       };
 
-      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+      await copyTextWithFallback(JSON.stringify(payload, null, 2));
       setCopyState("copied");
       window.setTimeout(() => setCopyState("idle"), 2200);
     } catch (error) {
+      const message = readableError(error);
       console.error("Could not copy conversion intelligence export", error);
+      setCopyError(message);
       setCopyState("error");
-      window.setTimeout(() => setCopyState("idle"), 3200);
     }
   }
 
@@ -236,7 +290,9 @@ export default function CopyEverythingButton() {
         }}
       >
         <div>
-          <strong style={{ display: "block", fontSize: 19 }}>Calculadora de CAC ideal</strong>
+          <strong style={{ display: "block", fontSize: 19 }}>
+            Calculadora de CAC ideal
+          </strong>
           <span style={{ fontSize: 13, opacity: 0.68 }}>
             Preserve lucro sem confundir CAC alvo com CAC de equilíbrio.
           </span>
@@ -262,7 +318,7 @@ export default function CopyEverythingButton() {
           </label>
 
           <label style={{ display: "grid", fontSize: 13, gap: 6 }}>
-            Margem antes da mídia (%)
+            Margem de contribuição antes da mídia (%)
             <input
               inputMode="decimal"
               value={inputs.contributionMarginPercent}
@@ -325,7 +381,8 @@ export default function CopyEverythingButton() {
               </strong>
             </div>
             <div style={{ fontSize: 13, opacity: 0.72 }}>
-              Lucro preservado: {moneyFormatter.format(calculation.outputs.desired_profit_after_ads)}
+              Lucro preservado:{" "}
+              {moneyFormatter.format(calculation.outputs.desired_profit_after_ads)}
             </div>
             <div style={{ fontSize: 13, opacity: 0.72, textAlign: "right" }}>
               ROAS alvo: {calculation.outputs.target_roas?.toFixed(2) ?? "∞"}x
@@ -366,6 +423,21 @@ export default function CopyEverythingButton() {
       >
         {buttonLabel}
       </button>
+
+      {copyError ? (
+        <p
+          role="alert"
+          style={{
+            fontSize: 13,
+            lineHeight: 1.45,
+            margin: "-6px 4px 0",
+            opacity: 0.78,
+            overflowWrap: "anywhere",
+          }}
+        >
+          {copyError}
+        </p>
+      ) : null}
     </section>
   );
 }

@@ -8,6 +8,12 @@ export const dynamic = "force-dynamic";
 const MAINTENANCE_TOKEN = "legacy-gaiety-20260719-b8f174e0";
 const CURRENT_SITE_CUTOVER = "2026-07-19T03:00:00.000Z";
 
+type Row = Record<string, unknown>;
+
+function rows(value: unknown): Row[] {
+  return Array.isArray(value) ? (value as Row[]) : [];
+}
+
 export async function GET(request: NextRequest): Promise<NextResponse> {
   if (request.nextUrl.searchParams.get("token") !== MAINTENANCE_TOKEN) {
     return NextResponse.json({ ok: false, error: "Not found." }, { status: 404 });
@@ -20,7 +26,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     (like public.analytics_events including all)
   `;
 
-  const matchingBefore = await sql`
+  const matchingBeforeResult = await sql`
     select count(*)::integer as count
     from public.analytics_events e
     where
@@ -33,7 +39,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       or e.properties @> '{"line_items":[{"product_id":"15913500705137"}]}'::jsonb
   `;
 
-  const archived = await sql`
+  const archivedResult = await sql`
     insert into public.analytics_events_archive_legacy_gaiety
     select e.*
     from public.analytics_events e
@@ -49,7 +55,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     returning event_id
   `;
 
-  const deleted = await sql`
+  const deletedResult = await sql`
     delete from public.analytics_events e
     where
       e.client_timestamp < ${CURRENT_SITE_CUTOVER}::timestamptz
@@ -62,7 +68,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     returning event_id
   `;
 
-  const remainingLegacy = await sql`
+  const remainingLegacyResult = await sql`
     select count(*)::integer as count
     from public.analytics_events e
     where
@@ -74,6 +80,11 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       or coalesce(e.properties ->> 'product_name', '') ilike '%GAIETY Classic%'
       or e.properties @> '{"line_items":[{"product_id":"15913500705137"}]}'::jsonb
   `;
+
+  const matchingBefore = rows(matchingBeforeResult);
+  const archived = rows(archivedResult);
+  const deleted = rows(deletedResult);
+  const remainingLegacy = rows(remainingLegacyResult);
 
   return NextResponse.json(
     {

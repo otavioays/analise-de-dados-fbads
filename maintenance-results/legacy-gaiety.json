@@ -1,0 +1,1 @@
+{"ok":true,"mode":"archive_then_delete","cutover":"2026-07-19T03:00:00.000Z","matching_before":0,"archived_now":0,"archived_total":179,"deleted_now":0,"remaining_legacy":0,"archive_table":"public.analytics_events_archive_legacy_gaiety"}

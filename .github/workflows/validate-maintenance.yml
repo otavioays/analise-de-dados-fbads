@@ -1,0 +1,34 @@
+name: Validate maintenance route
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - name: Capture typecheck
+        shell: bash
+        run: |
+          set +e
+          npm run typecheck > typecheck.log 2>&1
+          status=$?
+          cat typecheck.log
+          echo "$status" > typecheck.status
+          exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maintenance-typecheck
+          path: |
+            typecheck.log
+            typecheck.status

@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { buildSafeIntelligenceExport } from "@/lib/intelligence-export-safe";
+import { buildPrivateIntelligenceExport } from "@/lib/intelligence-export-v1-2";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
   try {
-    const payload = await buildSafeIntelligenceExport(request);
+    const payload = await buildPrivateIntelligenceExport(request);
     return NextResponse.json(payload, {
       status: 200,
       headers: {

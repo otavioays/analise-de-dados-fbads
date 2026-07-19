@@ -1,0 +1,33 @@
+name: Execute legacy GAIETY cleanup
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for production route and execute cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://analise-de-dados-fbads.vercel.app/api/maintenance/cleanup-legacy-gaiety?token=legacy-gaiety-20260719-b8f174e0"
+          for attempt in $(seq 1 24); do
+            if curl --fail --silent --show-error "$url" --output cleanup-result.json; then
+              cat cleanup-result.json
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Cleanup endpoint did not become available in time." >&2
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: legacy-gaiety-cleanup-result
+          path: cleanup-result.json
+          if-no-files-found: warn

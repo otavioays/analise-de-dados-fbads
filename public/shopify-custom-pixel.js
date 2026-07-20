@@ -94,6 +94,20 @@ function deviceType(event) {
   return "desktop";
 }
 
+function journeyClassification(attributes) {
+  return {
+    page_type: "checkout",
+    funnel_stage: null,
+    source_page_type: attributes.ct_page_type || "sales_page",
+    source_funnel_stage: attributes.ct_funnel_stage || "sales_page",
+    source_page_name: attributes.ct_page_name || "gaiety_sales_page",
+    funnel_id: attributes.ct_funnel_id || "gaiety_modo_claro",
+    journey_type: attributes.ct_journey_type || "unknown",
+    previous_page_type: attributes.ct_previous_page_type || "unknown",
+    entry_source: attributes.ct_entry_source || "unknown",
+  };
+}
+
 async function send(eventName, event) {
   const checkout = event?.data?.checkout || {};
   const attributes = attributesToObject(checkout.attributes);
@@ -106,6 +120,8 @@ async function send(eventName, event) {
   const value = moneyValue(checkout.totalPrice) ?? moneyValue(checkout.subtotalPrice);
   const currency = checkout.currencyCode || checkout.totalPrice?.currencyCode || null;
   const items = checkoutItems(checkout);
+  const journey = journeyClassification(attributes);
+  journey.funnel_stage = eventName === "purchase" ? "purchase" : "checkout_started";
 
   const payload = compact({
     event_id: uuid(),
@@ -128,7 +144,8 @@ async function send(eventName, event) {
     language: event?.context?.navigator?.language || null,
     properties: compact({
       source: "shopify_custom_pixel",
-      tracker_version: 1,
+      tracker_version: 2,
+      ...journey,
       shopify_event_id: event?.id || null,
       shopify_event_name: event?.name || null,
       shopify_event_sequence: event?.seq ?? null,
